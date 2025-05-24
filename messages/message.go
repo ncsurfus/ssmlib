@@ -83,10 +83,10 @@ func NewTerminateSessionMessage() *AgentMessage {
 	return msg
 }
 
-func NewAcknowledgementMessage(sequeceNumber int64, data []byte) *AgentMessage {
+func NewAcknowledgementMessage(sequenceNumber int64, data []byte) *AgentMessage {
 	msg := NewAgentMessage()
 	msg.MessageType = Acknowledge
-	msg.SequenceNumber = sequeceNumber
+	msg.SequenceNumber = sequenceNumber
 	msg.Flags = Ack
 	msg.PayloadType = Undefined
 	msg.Payload = data
@@ -134,6 +134,17 @@ func NewHandshakeResponse(version string, actions []RequestedClientAction) (*Age
 	msg.Payload = payload
 
 	return msg, nil
+}
+
+func ParseAcknowledgment(msg *AgentMessage) (int64, error) {
+	ack := struct {
+		AcknowledgedMessageSequenceNumber int64 `json:"AcknowledgedMessageSequenceNumber"`
+	}{}
+	if err := json.Unmarshal(msg.Payload, &ack); err != nil {
+		return 0, fmt.Errorf("failed to unmarshal acknowledgement request: %w", err)
+	}
+
+	return ack.AcknowledgedMessageSequenceNumber, nil
 }
 
 // ValidateMessage performs checks on the values of the AgentMessage to ensure they are sane.

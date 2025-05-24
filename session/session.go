@@ -115,11 +115,13 @@ func (s *Session) Start(ctx context.Context) error {
 		return fmt.Errorf("StreamURL cannot be empty")
 	}
 
+	slog.Debug("Dialing StreamURL")
 	ws, err := s.Dialer.Dial(s.StreamURL)
 	if err != nil {
 		return fmt.Errorf("failed to dial ssm websocket url: %w", err)
 	}
 
+	slog.Debug("Opening DataChannel")
 	err = s.openDataChannel(ws)
 	if err != nil {
 		ws.Close()
@@ -212,7 +214,7 @@ func (s *Session) Read(ctx context.Context) (*messages.AgentMessage, error) {
 	select {
 	case message := <-s.incomingDataMessages:
 		return message, nil
-	case <-s.stopped:
+	case <-s.errctx.Done():
 		return nil, fmt.Errorf("session is stopped: %w", io.EOF)
 	}
 }
@@ -223,7 +225,7 @@ func (s *Session) Write(ctx context.Context, message *messages.AgentMessage) err
 	select {
 	case s.outgoingMessages <- message:
 		return nil
-	case <-s.stopped:
+	case <-s.errctx.Done():
 		return fmt.Errorf("session is stopped: %w", io.EOF)
 	}
 }
@@ -285,6 +287,7 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 			if message.SequenceNumber == 0 && message.Flags != messages.Fin {
 				message.Flags = messages.Syn
 			}
+
 			err := s.writeMessage(message, socket)
 			if err != nil {
 				// This isn't good, but if we fail to send something, then we wont get an acknowledgment
@@ -328,17 +331,24 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 			return fmt.Errorf("failed to get next message: %w", err)
 		}
 
-		m := &messages.AgentMessage{}
-		if err := m.UnmarshalBinary(data); err != nil {
+		msg := &messages.AgentMessage{}
+		if err := msg.UnmarshalBinary(data); err != nil {
 			return fmt.Errorf("failed to unmarshal message: %w", err)
 		}
 
-		switch m.MessageType {
+		slog.Debug("Received Message", "MessageType", msg.MessageType)
+
+		switch msg.MessageType {
 		case messages.Acknowledge:
-			select {
-			case s.ackReceived <- m.SequenceNumber:
-			case <-ctx.Done():
-				return fmt.Errorf("failed to send acknowledgment into queue: %w", ctx.Err())
+			acknowledgedSequence, err := messages.ParseAcknowledgment(msg)
+			if err != nil {
+				s.Log.Warn("failed to parse acknowledgement.", "error", err)
+			} else {
+				select {
+				case s.ackReceived <- acknowledgedSequence:
+				case <-ctx.Done():
+					return fmt.Errorf("failed to send acknowledgment into queue: %w", ctx.Err())
+				}
 			}
 
 		// Doesn't appear to actually be used by the ssm plugin.
@@ -349,32 +359,32 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 
 		// This is handled by the handler that cares about the data stream.
 		case messages.OutputStreamData:
-			err := s.sendAcknowledgeMessage(ctx, m)
+			err := s.sendAcknowledgeMessage(ctx, msg)
 			if err != nil {
-				s.Log.Error("Failed to send acknowledgement", "sequence", m.SequenceNumber, "error", err)
+				s.Log.Error("Failed to send acknowledgement", "sequence", msg.SequenceNumber, "error", err)
 			}
 
 			// We have two choices if the receiver is not keepig up with the packets.
 			// We can either drop incoming data messages or we can stop reading new
 			// packets until they catch up. This implementation stops everything.
 			// It might be better to just drop the packets instead. This would
-			if incomingSequenceId == m.SequenceNumber {
+			if incomingSequenceId == msg.SequenceNumber {
 				select {
-				case s.incomingDataMessages <- m:
-					m.SequenceNumber += 1
+				case s.incomingDataMessages <- msg:
+					incomingSequenceId += 1
 				case <-ctx.Done():
 					return fmt.Errorf("failed to send data message into queue: %w", ctx.Err())
 				}
+			} else {
+				slog.Debug("Bad Sequence Number", "ExpectedSequence", incomingSequenceId, "ActualSequence", msg.SequenceNumber)
 			}
-			return nil
 
 		// Remote session is closing the session
 		case messages.ChannelClosed:
-			return fmt.Errorf("remote caller closed channel: %w", io.EOF)
+			return fmt.Errorf("remote caller closed channel: %w", io.ErrClosedPipe)
 
 		default:
-			s.Log.Warn("Received an unknown message type", "messageType", m.MessageType)
-			return nil
+			s.Log.Warn("Received an unknown message type", "messageType", msg.MessageType)
 		}
 	}
 }
