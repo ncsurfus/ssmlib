@@ -52,12 +52,12 @@ func (s *Stream) Start(ctx context.Context, session session.ReaderWriter) error 
 
 	// Copy data from SSM to the writer
 	s.errgrp.Go(func() error {
-		return CopySessionReaderToWriter(ctx, s.Writer, session)
+		return CopySessionReaderToWriter(s.errctx, s.Writer, session)
 	})
 
 	// Copy data from the reader to SSM
 	s.errgrp.Go(func() error {
-		return CopyReaderToSessionWriter(ctx, s.Reader, session)
+		return CopyReaderToSessionWriter(s.errctx, s.Reader, session)
 	})
 
 	return nil

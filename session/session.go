@@ -346,8 +346,7 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 			// We have two choices if the receiver is not keepig up with the packets.
 			// We can either drop incoming data messages or we can stop reading new
 			// packets until they catch up. This implementation stops everything.
-			// We also don't want to deadlock during a cancellation and the queue
-			// being full... a corner case... but it still exists!
+			// It might be better to just drop the packets instead. This would
 			if incomingSequenceId == m.SequenceNumber {
 				select {
 				case s.incomingDataMessages <- m:

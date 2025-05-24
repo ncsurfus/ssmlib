@@ -103,17 +103,17 @@ func (m *MuxPortForward) Start(ctx context.Context, session session.ReaderWriter
 
 	// Copy data from SSM to smux
 	m.errgrp.Go(func() error {
-		return CopySessionReaderToWriter(ctx, dataConn, session)
+		return CopySessionReaderToWriter(m.errctx, dataConn, session)
 	})
 
 	// Copy data from smux to SSM
 	m.errgrp.Go(func() error {
-		return CopyReaderToSessionWriter(ctx, dataConn, session)
+		return CopyReaderToSessionWriter(m.errctx, dataConn, session)
 	})
 
 	// Handle incoming dial requests
 	m.errgrp.Go(func() error {
-		return m.handleDialRequests(ctx, smuxSession)
+		return m.handleDialRequests(m.errctx, smuxSession)
 	})
 
 	return nil
