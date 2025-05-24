@@ -69,10 +69,10 @@ func (m *MuxPortForward) Start(ctx context.Context, session session.ReaderWriter
 		return fmt.Errorf("the remote ssm agent version, %v, does not support mux", handshakeResult.RemoteVersion)
 	}
 
-	slog.Debug("Initializing smux.")
+	m.Log.Debug("Initializing smux.")
 	smuxConfig := smux.DefaultConfig()
 	if SmuxKeepAliveSupported.SupportsVersion(handshakeResult.RemoteVersion) {
-		slog.Debug("Disabling smux keep alives.")
+		m.Log.Debug("Disabling smux keep alives.")
 		smuxConfig.KeepAliveDisabled = true
 	}
 

@@ -115,13 +115,13 @@ func (s *Session) Start(ctx context.Context) error {
 		return fmt.Errorf("StreamURL cannot be empty")
 	}
 
-	slog.Debug("Dialing StreamURL")
+	s.Log.Debug("Dialing StreamURL")
 	ws, err := s.Dialer.Dial(s.StreamURL)
 	if err != nil {
 		return fmt.Errorf("failed to dial ssm websocket url: %w", err)
 	}
 
-	slog.Debug("Opening DataChannel")
+	s.Log.Debug("Opening DataChannel")
 	err = s.openDataChannel(ws)
 	if err != nil {
 		ws.Close()
@@ -376,7 +376,7 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 					return fmt.Errorf("failed to send data message into queue: %w", ctx.Err())
 				}
 			} else {
-				slog.Debug("Bad Sequence Number", "ExpectedSequence", incomingSequenceId, "ActualSequence", msg.SequenceNumber)
+				s.Log.Debug("Unexpected Sequence Number", "ExpectedSequence", incomingSequenceId, "ActualSequence", msg.SequenceNumber)
 			}
 
 		// Remote session is closing the session
