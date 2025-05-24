@@ -229,6 +229,8 @@ func (s *Session) Write(ctx context.Context, message *messages.AgentMessage) err
 }
 
 func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketConection) error {
+	// TODO: It might be good to keep this state in a struct, separate from the method. That way
+	// if we reconnect to the websocket, we can pickup exactly where we left off.
 	nextOutgoingSequenceNumber := int64(0)
 	unacknowledgedMessages := map[int64]*messages.AgentMessage{}
 
@@ -280,10 +282,17 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 			s.Log.Debug("Sending message to remote", "messageType", message.MessageType, "sequenceNumber", nextOutgoingSequenceNumber)
 			message.SequenceNumber = nextOutgoingSequenceNumber
 			unacknowledgedMessages[nextOutgoingSequenceNumber] = message
+			if message.SequenceNumber == 0 && message.Flags != messages.Fin {
+				message.Flags = messages.Syn
+			}
 			err := s.writeMessage(message, socket)
 			if err != nil {
 				// This isn't good, but if we fail to send something, then we wont get an acknowledgment
-				// and we'd just resend it anyway.
+				// and we'd just resend it anyway. If everything starts failing, then we'd fill up our unacknowledged
+				// message buffer, and the resend timer would resolve an intermittent issue, or it would error out.
+				//
+				// TODO: Perhaps we should store any error messages, so that way the error can bubble back up
+				// in resendTimeout....
 				s.Log.Error("failed to send message", "messageType", message.MessageType, "error", err)
 			}
 			nextOutgoingSequenceNumber += 1
@@ -305,6 +314,8 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 }
 
 func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketConection) error {
+	// TODO: It might be good to keep this state in a struct, separate from the method. That way
+	// if we reconnect to the websocket, we can pickup exactly where we left off.
 	incomingSequenceId := int64(0)
 
 	for {
