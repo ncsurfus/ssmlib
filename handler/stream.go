@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 
+	tsize "github.com/kopoli/go-terminal-size"
+	"github.com/ncsurfus/ssmlib/messages"
 	"github.com/ncsurfus/ssmlib/session"
 	"golang.org/x/sync/errgroup"
 )
@@ -63,6 +65,47 @@ func (s *Stream) Start(ctx context.Context, session session.ReaderWriter) error 
 	// Copy data from the reader to SSM
 	s.errgrp.Go(func() error {
 		return CopyReaderToSessionWriter(s.errctx, s.Reader, session)
+	})
+
+	// Update Terminal Size
+	s.errgrp.Go(func() error {
+		// This failing should not force the errgrp to exit!
+		listener, err := tsize.NewSizeListener()
+		if err != nil {
+			s.Log.Warn("Failed to initialize terminal listener. Cannot get terminal size!")
+			return nil
+		}
+		defer listener.Close()
+
+		updateSize := func(size tsize.Size) {
+			msg, err := messages.NewSizeMessage(uint32(size.Height), uint32(size.Width))
+			if err != nil {
+				s.Log.Warn("failed to create terminal size message!", "error", err)
+				return
+			}
+			err = session.Write(s.errctx, msg)
+			if err != nil {
+				s.Log.Warn("failed to send terminal size message!", "error", err)
+				return
+			}
+		}
+
+		initialSize, err := tsize.GetSize()
+		if err != nil {
+			s.Log.Warn("failed to get initial terminal size!", "error", err)
+		} else {
+			updateSize(initialSize)
+		}
+
+		for {
+			select {
+			case <-s.errctx.Done():
+				return nil
+			case size := <-listener.Change:
+				updateSize(size)
+			}
+		}
+
 	})
 
 	return nil
