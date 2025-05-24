@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 
 	"github.com/ncsurfus/ssmlib/session"
@@ -13,6 +14,7 @@ import (
 type Stream struct {
 	Reader io.Reader
 	Writer io.Writer
+	Log    *slog.Logger
 
 	errgrp *errgroup.Group
 	errctx context.Context
@@ -26,6 +28,9 @@ func (s *Stream) init() {
 	s.initOnce.Do(func() {
 		s.stopped = make(chan struct{})
 		s.errgrp, s.errctx = errgroup.WithContext(context.Background())
+		if s.Log == nil {
+			s.Log = slog.New(slog.DiscardHandler)
+		}
 	})
 }
 
@@ -78,7 +83,7 @@ func (s *Stream) Wait(ctx context.Context) error {
 	}
 }
 
-func (s *Stream) Stop(ctx context.Context) {
+func (s *Stream) Stop() {
 	s.init()
 	s.signalStop()
 }
