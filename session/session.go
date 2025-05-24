@@ -336,7 +336,7 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 			return fmt.Errorf("failed to unmarshal message: %w", err)
 		}
 
-		slog.Debug("Received Message", "MessageType", msg.MessageType)
+		s.Log.Debug("Received Message", "MessageType", msg.MessageType)
 
 		switch msg.MessageType {
 		case messages.Acknowledge:
