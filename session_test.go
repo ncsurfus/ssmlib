@@ -263,28 +263,6 @@ func TestSession_HandleOutgoingMessages(t *testing.T) {
 	assert.Error(t, err) // Should error due to context cancellation
 }
 
-func TestSession_HandleOutgoingMessages_WriteError(t *testing.T) {
-	mockWS := &MockWebsocketConnection{}
-	s := &Session{}
-	s.init()
-
-	// Setup mock to fail the write
-	mockWS.On("WriteMessage", websocket.BinaryMessage, mock.Anything).Return(errors.New("write error"))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		msg := messages.NewTerminateSessionMessage()
-		s.outgoingMessages <- msg
-	}()
-
-	err := s.handleOutgoingMessages(ctx, mockWS)
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrSendMessageFailed)
-}
-
 func TestSession_HandleIncomingMessages(t *testing.T) {
 	mockWS := &MockWebsocketConnection{}
 	s := &Session{}

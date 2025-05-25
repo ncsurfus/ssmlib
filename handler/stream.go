@@ -42,7 +42,7 @@ func (s *Stream) init() {
 		s.stopped = make(chan struct{})
 		s.errgrp, s.errctx = errgroup.WithContext(context.Background())
 		if s.Log == nil {
-			s.Log = slog.New(slog.DiscardHandler)
+			s.Log = slog.New(DiscardHandler)
 		}
 	})
 }

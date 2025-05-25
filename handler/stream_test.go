@@ -70,7 +70,7 @@ func TestStream_Start_Success(t *testing.T) {
 	stream := &Stream{
 		Reader: mockReader,
 		Writer: mockWriter,
-		Log:    slog.New(slog.DiscardHandler),
+		Log:    slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -98,7 +98,7 @@ func TestStream_Start_WithDefaults(t *testing.T) {
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
 
 	stream := &Stream{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -124,7 +124,7 @@ func TestStream_Start_WithDefaults(t *testing.T) {
 
 func TestStream_Stop(t *testing.T) {
 	stream := &Stream{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	// Stop should not panic even if not started
@@ -136,7 +136,7 @@ func TestStream_Stop(t *testing.T) {
 
 func TestStream_Wait_ContextCanceled(t *testing.T) {
 	stream := &Stream{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -149,7 +149,7 @@ func TestStream_Wait_ContextCanceled(t *testing.T) {
 
 func TestStream_Wait_AfterStop(t *testing.T) {
 	stream := &Stream{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	// Stop the stream
@@ -186,7 +186,7 @@ func TestStream_GetTerminalSize_WithCustomTerminalSize(t *testing.T) {
 
 	stream := &Stream{
 		TerminalSize: mockTermSize,
-		Log:          slog.New(slog.DiscardHandler),
+		Log:          slog.New(DiscardHandler),
 	}
 
 	termSize := stream.getTerminalSize()
@@ -202,7 +202,7 @@ func TestStream_GetTerminalSize_WithFdWriter(t *testing.T) {
 
 	stream := &Stream{
 		Writer: mockWriter,
-		Log:    slog.New(slog.DiscardHandler),
+		Log:    slog.New(DiscardHandler),
 	}
 
 	termSize := stream.getTerminalSize()
@@ -219,7 +219,7 @@ func TestStream_GetTerminalSize_WithoutFdWriter(t *testing.T) {
 
 	stream := &Stream{
 		Writer: mockWriter,
-		Log:    slog.New(slog.DiscardHandler),
+		Log:    slog.New(DiscardHandler),
 	}
 
 	termSize := stream.getTerminalSize()
@@ -258,7 +258,7 @@ func TestStream_Integration_DataFlow(t *testing.T) {
 	stream := &Stream{
 		Reader: reader,
 		Writer: writer,
-		Log:    slog.New(slog.DiscardHandler),
+		Log:    slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -306,7 +306,7 @@ func TestStream_TerminalSizeUpdates(t *testing.T) {
 		Reader:       mockReader,
 		Writer:       &bytes.Buffer{},
 		TerminalSize: mockTermSize,
-		Log:          slog.New(slog.DiscardHandler),
+		Log:          slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -347,7 +347,7 @@ func TestStream_TerminalSizeError(t *testing.T) {
 		Reader:       mockReader,
 		Writer:       &bytes.Buffer{},
 		TerminalSize: mockTermSize,
-		Log:          slog.New(slog.DiscardHandler),
+		Log:          slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -378,7 +378,7 @@ func TestStream_ReaderError(t *testing.T) {
 	stream := &Stream{
 		Reader: mockReader,
 		Writer: &bytes.Buffer{},
-		Log:    slog.New(slog.DiscardHandler),
+		Log:    slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -405,7 +405,7 @@ func TestStream_SessionWriteError(t *testing.T) {
 	stream := &Stream{
 		Reader: strings.NewReader("test data"),
 		Writer: &bytes.Buffer{},
-		Log:    slog.New(slog.DiscardHandler),
+		Log:    slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -432,7 +432,7 @@ func TestStream_SessionReadError(t *testing.T) {
 	stream := &Stream{
 		Reader: strings.NewReader(""),
 		Writer: &bytes.Buffer{},
-		Log:    slog.New(slog.DiscardHandler),
+		Log:    slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -480,7 +480,7 @@ func TestStream_WriterError(t *testing.T) {
 	stream := &Stream{
 		Reader: strings.NewReader(""),
 		Writer: mockWriter,
-		Log:    slog.New(slog.DiscardHandler),
+		Log:    slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

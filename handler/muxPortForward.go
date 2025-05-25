@@ -54,7 +54,7 @@ func (m *MuxPortForward) init() {
 		m.dialRequests = make(chan muxDialRequest) // unbuffered by design
 		m.stopped = make(chan struct{})
 		if m.Log == nil {
-			m.Log = slog.New(slog.DiscardHandler)
+			m.Log = slog.New(DiscardHandler)
 		}
 		m.errgrp, m.errctx = errgroup.WithContext(context.Background())
 	})
@@ -99,7 +99,10 @@ func (m *MuxPortForward) Start(ctx context.Context, session SessionReaderWriter)
 	// Cleanup resources
 	m.errgrp.Go(func() error {
 		<-m.errctx.Done()
-		smuxSession.Close()
+		err := smuxSession.Close()
+		if err != nil {
+			m.Log.Warn("smux failed to close", "error", err)
+		}
 		m.signalStop()
 		return nil
 	})

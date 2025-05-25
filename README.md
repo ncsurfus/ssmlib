@@ -200,6 +200,26 @@ Run tests with verbose output:
 go test -v ./...
 ```
 
+Run tests with race detection and coverage:
+
+```bash
+go test -v -race -coverprofile=coverage.out ./...
+```
+
+## Linting
+
+This project uses golangci-lint for code quality checks.
+
+```bash
+golangci-lint run
+```
+
+Fix auto-fixable issues:
+
+```bash
+golangci-lint run --fix
+```
+
 ## Contributing
 
 1. Fork the repository

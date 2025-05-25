@@ -37,7 +37,7 @@ func TestMuxPortForward_Start_HandshakeFailed(t *testing.T) {
 	mockSession.On("Read", mock.Anything).Return(nil, errors.New("read error"))
 
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -72,7 +72,7 @@ func TestMuxPortForward_Start_RemoteVersionNotSupported(t *testing.T) {
 	mockSession.On("Read", mock.Anything).Return(completeMsg, nil).Once()
 
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -111,7 +111,7 @@ func TestMuxPortForward_Start_Success(t *testing.T) {
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
 
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -133,7 +133,7 @@ func TestMuxPortForward_Start_Success(t *testing.T) {
 
 func TestMuxPortForward_Stop(t *testing.T) {
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	// Stop should not panic even if not started
@@ -145,7 +145,7 @@ func TestMuxPortForward_Stop(t *testing.T) {
 
 func TestMuxPortForward_Wait_ContextCanceled(t *testing.T) {
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -158,7 +158,7 @@ func TestMuxPortForward_Wait_ContextCanceled(t *testing.T) {
 
 func TestMuxPortForward_Wait_AfterStop(t *testing.T) {
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	// Stop the mux
@@ -175,7 +175,7 @@ func TestMuxPortForward_Wait_AfterStop(t *testing.T) {
 
 func TestMuxPortForward_Dial_NotStarted(t *testing.T) {
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -190,7 +190,7 @@ func TestMuxPortForward_Dial_NotStarted(t *testing.T) {
 
 func TestMuxPortForward_Dial_ContextCanceled(t *testing.T) {
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -204,7 +204,7 @@ func TestMuxPortForward_Dial_ContextCanceled(t *testing.T) {
 
 func TestMuxPortForward_Dial_AfterStop(t *testing.T) {
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	// Stop the mux first
@@ -294,7 +294,7 @@ func TestMuxPortForward_Integration(t *testing.T) {
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
 
 	mux := &MuxPortForward{
-		Log: slog.New(slog.DiscardHandler),
+		Log: slog.New(DiscardHandler),
 	}
 
 	// Start the mux

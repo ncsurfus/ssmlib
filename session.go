@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/ncsurfus/ssmlib/handler"
 	"github.com/ncsurfus/ssmlib/messages"
 	"golang.org/x/sync/errgroup"
 )
@@ -21,7 +22,6 @@ import (
 var (
 	ErrWebsocketDialFailed        = errors.New("failed to dial ssm websocket url")
 	ErrOpenDataChannelFailed      = errors.New("failed to open data channel")
-	ErrSendMessageFailed          = errors.New("failed to send message")
 	ErrRemoteSSMClosedPipe        = errors.New("remote ssm closed channel")
 	ErrCreateAcknowledgmentFailed = errors.New("failed to create acknowledgment")
 	ErrQueueAcknowledgmentFailed  = errors.New("failed to queue acknowledgment")
@@ -104,7 +104,7 @@ func (s *Session) init() {
 		}
 
 		if s.Log == nil {
-			s.Log = slog.New(slog.DiscardHandler)
+			s.Log = slog.New(handler.DiscardHandler)
 		}
 	})
 }
@@ -125,7 +125,10 @@ func (s *Session) Start(ctx context.Context, streamURL string, tokenValue string
 	s.Log.Debug("Opening DataChannel")
 	err = s.openDataChannel(ws, tokenValue)
 	if err != nil {
-		ws.Close()
+		wErr := ws.Close()
+		if wErr != nil {
+			return fmt.Errorf("%w: %w: %w", wErr, ErrOpenDataChannelFailed, err)
+		}
 		return fmt.Errorf("%w: %w", ErrOpenDataChannelFailed, err)
 	}
 
@@ -135,7 +138,9 @@ func (s *Session) Start(ctx context.Context, streamURL string, tokenValue string
 	// Cleanup resources
 	s.errgrp.Go(func() error {
 		<-s.errctx.Done()
-		ws.Close()
+		if err := ws.Close(); err != nil {
+			s.Log.Debug("websocket failed to close!", "error", err)
+		}
 		s.Handler.Stop()
 		s.signalStop()
 		return nil
@@ -325,14 +330,17 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 				// TODO: Perhaps we should store any error messages, so that way the error can bubble back up
 				// in resendTimeout....
 				s.Log.Error("failed to send message", "messageType", message.MessageType, "error", err)
-				return ErrSendMessageFailed
 			}
 			nextOutgoingSequenceNumber += 1
 
 		// Resend the next unacknowledged message if the timeout has passed
 		case <-resendTimer:
 			s.Log.Debug("Resending message", "sequenceNumber", resendSequenceNumber)
-			s.writeMessage(unacknowledgedMessages[resendSequenceNumber], socket)
+			message := unacknowledgedMessages[resendSequenceNumber]
+			err := s.writeMessage(message, socket)
+			if err != nil {
+				s.Log.Error("failed to resend message", "messageType", message.MessageType, "error", err)
+			}
 
 		case <-resendTimeout:
 			s.Log.Error("Remote didn't acknowledge message!", "sequenceNumber", resendSequenceNumber)

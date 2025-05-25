@@ -266,13 +266,13 @@ func (m *AgentMessage) MarshalBinary() ([]byte, error) {
 func (m *AgentMessage) String() string {
 	sb := new(strings.Builder)
 	sb.WriteString("AgentMessage{")
-	sb.WriteString(fmt.Sprintf("TYPE: %s, ", m.MessageType))
-	sb.WriteString(fmt.Sprintf("SCHEMA VERSION: %d, ", m.SchemaVersion))
-	sb.WriteString(fmt.Sprintf("SEQUENCE: %d, ", m.SequenceNumber))
-	sb.WriteString(fmt.Sprintf("MESSAGE ID: %s, ", m.MessageID))
-	sb.WriteString(fmt.Sprintf("PAYLOAD TYPE: %d, ", m.PayloadType))
-	sb.WriteString(fmt.Sprintf("PAYLOAD LENGTH: %d", m.PayloadLength))
-	sb.WriteString(fmt.Sprintln("}"))
+	fmt.Fprintf(sb, "TYPE: %s, ", m.MessageType)
+	fmt.Fprintf(sb, "SCHEMA VERSION: %d, ", m.SchemaVersion)
+	fmt.Fprintf(sb, "SEQUENCE: %d, ", m.SequenceNumber)
+	fmt.Fprintf(sb, "MESSAGE ID: %s, ", m.MessageID)
+	fmt.Fprintf(sb, "PAYLOAD TYPE: %d, ", m.PayloadType)
+	fmt.Fprintf(sb, "PAYLOAD LENGTH: %d", m.PayloadLength)
+	fmt.Fprintln(sb, "}")
 	return sb.String()
 }
 
