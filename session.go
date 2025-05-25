@@ -35,7 +35,7 @@ var (
 
 const maxOutOfOrderMessages = 50
 const maxInflightMessages = 50
-const resendIntervalDuration = 10 * time.Second
+const resendIntervalDuration = 1 * time.Second
 const resendTimeoutDuration = 1 * time.Minute
 const clientVersion = "1.2.0.0"
 
@@ -380,7 +380,11 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 			}
 			nextOutgoingSequenceNumber += 1
 
-		// Resend the next unacknowledged message if the timeout has passed
+			// Don't send things too fast, otherwise the remote end appears to have a lot of issues keeping up.
+			time.Sleep(2 * time.Millisecond)
+
+		// TODO: Store a timestamp with each message, and this can run on an interval
+		// inspecting them and then resend relevant ones...
 		case <-resendTimer:
 			s.Log.Debug("Resending message", "sequenceNumber", resendSequenceNumber)
 			message := unacknowledgedMessages[resendSequenceNumber]
