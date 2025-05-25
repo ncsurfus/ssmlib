@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/ncsurfus/ssmlib/messages"
 )
@@ -37,6 +38,9 @@ func CopySessionReaderToWriter(ctx context.Context, writer io.Writer, reader Ses
 }
 
 func CopyReaderToSessionWriter(ctx context.Context, reader io.Reader, writer SessionWriter) error {
+	// In the future we should make this optionally buffered with a timer to flush data. This would
+	// enable callers to pick Latency vs Throughput. A small delay has been added to help prevent
+	// enable some buffering and prevent sending lots of tiny packets.
 	for {
 		// callers to read should always process any bytes first *and then* handle the error.)
 		buffer := make([]byte, 1024)
@@ -52,6 +56,8 @@ func CopyReaderToSessionWriter(ctx context.Context, reader io.Reader, writer Ses
 		if readerErr != nil {
 			return fmt.Errorf("%w: %w", ErrReadData, readerErr)
 		}
+
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
