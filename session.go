@@ -39,8 +39,9 @@ type WebsocketConection interface {
 }
 
 type Session struct {
-	Dialer WebsocketDialer
-	Log    *slog.Logger
+	Handler Handler
+	Dialer  WebsocketDialer
+	Log     *slog.Logger
 
 	// Messages that are queued to be sent and do not need
 	// acknowledgments.
@@ -74,6 +75,10 @@ func (s *Session) init() {
 		s.incomingDataMessages = make(chan *messages.AgentMessage, 20)
 		s.stopped = make(chan struct{})
 		s.errgrp, s.errctx = errgroup.WithContext(context.Background())
+
+		if s.Handler == nil {
+			s.Handler = &NopHandler{}
+		}
 
 		if s.Dialer == nil {
 			s.Dialer = WebsocketDialerFunc(func(url string) (WebsocketConection, error) {
@@ -118,13 +123,13 @@ func (s *Session) Start(ctx context.Context, streamURL string, tokenValue string
 	s.errgrp.Go(func() error {
 		<-s.errctx.Done()
 		ws.Close()
+		s.Handler.Stop()
 		s.signalStop()
 		return nil
 	})
 
 	// Handle a Stop() event.
 	s.errgrp.Go(func() error {
-		// The cleanup resources goroutine will ensure stop gets closed.
 		<-s.stopped
 		return io.EOF
 	})
@@ -137,6 +142,29 @@ func (s *Session) Start(ctx context.Context, streamURL string, tokenValue string
 	// Handle messages coming the remote SSM session.
 	s.errgrp.Go(func() error {
 		return s.handleIncomingMessages(s.errctx, ws)
+	})
+
+	// Ensure the handler starts properly. If it fails, then ensure everything
+	// is shut down, before Start returns.
+	s.Log.Info("Starting session handler")
+	err = s.Handler.Start(ctx, s)
+	if err != nil {
+		s.Log.Info("Starting handler failed!", "error", err)
+		s.errgrp.Go(func() error {
+			return fmt.Errorf("handler failed to start: %w", err)
+		})
+		s.Log.Info("Waiting for session to shutdown due to session handler start failure.")
+		return s.errgrp.Wait()
+	}
+
+	// Ensure that if the handler stops, everything else exits too. If the session stops
+	// then the cleanup goroutine will have already signaled for it to stop.
+	s.errgrp.Go(func() error {
+		s.Log.Debug("Starting session handler.")
+		defer s.Log.Debug("Session handler has stopped.")
+		err := s.Handler.Wait(context.Background())
+		s.Log.Debug("Session handler failed with error: %w", "error", err)
+		return err
 	})
 
 	return nil
@@ -200,7 +228,7 @@ func (s *Session) Read(ctx context.Context) (*messages.AgentMessage, error) {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("read cancelled: %w", ctx.Err())
 	case <-s.errctx.Done():
-		return nil, fmt.Errorf("session is stopped: %w", s.errgrp.Wait())
+		return nil, fmt.Errorf("session is stopped: %w", context.Cause(s.errctx))
 	}
 }
 
@@ -213,7 +241,7 @@ func (s *Session) Write(ctx context.Context, message *messages.AgentMessage) err
 	case <-ctx.Done():
 		return fmt.Errorf("write cancelled: %w", ctx.Err())
 	case <-s.errctx.Done():
-		return fmt.Errorf("session is stopped: %w", s.errgrp.Wait())
+		return fmt.Errorf("session is stopped: %w", context.Cause(s.errctx))
 	}
 }
 
@@ -368,7 +396,7 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 
 		// Remote session is closing the session
 		case messages.ChannelClosed:
-			return fmt.Errorf("remote caller closed channel: %w", io.ErrClosedPipe)
+			return fmt.Errorf("remote ssm closed channel: %w", io.ErrClosedPipe)
 
 		default:
 			s.Log.Warn("Received an unknown message type", "messageType", msg.MessageType)

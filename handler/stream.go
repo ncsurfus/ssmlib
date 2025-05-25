@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 const TerminalWindowIntervalMilliseconds = 250
 
 type Stream struct {
+	Reader       io.Reader
+	Writer       io.Writer
 	TerminalSize TerminalSize
 	Log          *slog.Logger
 
@@ -28,6 +31,12 @@ type Stream struct {
 
 func (s *Stream) init() {
 	s.initOnce.Do(func() {
+		if s.Reader == nil {
+			s.Reader = os.Stdin
+		}
+		if s.Writer == nil {
+			s.Writer = os.Stdout
+		}
 		s.stopped = make(chan struct{})
 		s.errgrp, s.errctx = errgroup.WithContext(context.Background())
 		if s.Log == nil {
@@ -40,14 +49,14 @@ func (s *Stream) signalStop() {
 	s.stopOnce.Do(func() { close(s.stopped) })
 }
 
-func (s *Stream) getTerminalSize(writer io.Writer) TerminalSize {
+func (s *Stream) getTerminalSize() TerminalSize {
 	if s.TerminalSize != nil {
 		return s.TerminalSize
 	}
 
 	// If our output has an Fd method, like *os.File, then we should default to that.
 	// Otherwise, just fallback to a safe default.
-	fd, ok := writer.(interface{ Fd() uintptr })
+	fd, ok := s.Writer.(interface{ Fd() uintptr })
 	if !ok {
 		return DefaultTerminalSizeFunc
 	}
@@ -57,7 +66,7 @@ func (s *Stream) getTerminalSize(writer io.Writer) TerminalSize {
 	})
 }
 
-func (s *Stream) Start(ctx context.Context, session SessionReaderWriter, reader io.ReadCloser, writer io.WriteCloser) error {
+func (s *Stream) Start(ctx context.Context, session SessionReaderWriter) error {
 	s.init()
 
 	// Cleanup resources
@@ -86,7 +95,7 @@ func (s *Stream) Start(ctx context.Context, session SessionReaderWriter, reader 
 		s.Log.Debug("Starting copy of session to writer")
 		defer s.Log.Debug("Stopping copy of session to writer.")
 
-		return CopySessionReaderToWriter(s.errctx, writer, session)
+		return CopySessionReaderToWriter(s.errctx, s.Writer, session)
 	})
 
 	// Copy data from the reader to SSM
@@ -94,13 +103,13 @@ func (s *Stream) Start(ctx context.Context, session SessionReaderWriter, reader 
 		s.Log.Debug("Starting copy of reader to session")
 		defer s.Log.Debug("Stopping copy of reader to session.")
 
-		return CopyReaderToSessionWriter(s.errctx, reader, session)
+		return CopyReaderToSessionWriter(s.errctx, s.Reader, session)
 	})
 
 	// Update Terminal Size
 	s.errgrp.Go(func() error {
 		// This failing should not force the errgrp to exit!
-		terminalSize := s.getTerminalSize(writer)
+		terminalSize := s.getTerminalSize()
 		lastWidth, lastHeight := 0, 0
 		for {
 			select {

@@ -170,7 +170,7 @@ func (m *MuxPortForward) Dial(ctx context.Context) (net.Conn, error) {
 		case <-ctx.Done():
 			responseC <- muxDialResponse{err: fmt.Errorf("failed to get dial response: %w", ctx.Err())}
 		case <-m.errctx.Done():
-			responseC <- muxDialResponse{err: fmt.Errorf("failed to request dial: %w", m.errgrp.Wait())}
+			responseC <- muxDialResponse{err: fmt.Errorf("failed to request dial: %w", context.Cause(m.errctx))}
 		case response := <-request.response:
 			responseC <- response
 		}
@@ -181,7 +181,7 @@ func (m *MuxPortForward) Dial(ctx context.Context) (net.Conn, error) {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("failed to request dial: %w", ctx.Err())
 	case <-m.errctx.Done():
-		return nil, fmt.Errorf("failed to request dial: %w", m.errgrp.Wait())
+		return nil, fmt.Errorf("failed to request dial: %w", context.Cause(m.errctx))
 	case m.dialRequests <- request:
 	}
 
