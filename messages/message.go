@@ -14,6 +14,13 @@ import (
 	"github.com/google/uuid"
 )
 
+var (
+	ErrCreateTerminalResize = errors.New("failed to create terminal resize message")
+	ErrCreateHandshake      = errors.New("failed to create handshake message")
+	ErrUnmarshalAck         = errors.New("failed to unmarshal acknowledgement request")
+	ErrInvalidAgentMessage  = errors.New("invalid agent message")
+)
+
 const agentMsgHeaderLen = 116 // the binary size of all AgentMessage fields except payloadLength and Payload
 
 // AgentMessage is the structural representation of the binary format of an SSM agent message use for communication
@@ -59,7 +66,7 @@ func NewSizeMessage(width int, height int) (*AgentMessage, error) {
 	input := map[string]int{"cols": width, "rows": height}
 	payload, err := json.Marshal(input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create terminal resize message: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateTerminalResize, err)
 	}
 
 	msg := NewAgentMessage()
@@ -124,7 +131,7 @@ func NewHandshakeResponse(version string, actions []RequestedClientAction) (*Age
 
 	payload, err := json.Marshal(handshake)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create handshake message: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateHandshake, err)
 	}
 
 	msg := NewAgentMessage()
@@ -141,7 +148,7 @@ func ParseAcknowledgment(msg *AgentMessage) (int64, error) {
 		AcknowledgedMessageSequenceNumber int64 `json:"AcknowledgedMessageSequenceNumber"`
 	}{}
 	if err := json.Unmarshal(msg.Payload, &ack); err != nil {
-		return 0, fmt.Errorf("failed to unmarshal acknowledgement request: %w", err)
+		return 0, fmt.Errorf("%w: %w", ErrUnmarshalAck, err)
 	}
 
 	return ack.AcknowledgedMessageSequenceNumber, nil
@@ -151,32 +158,32 @@ func ParseAcknowledgment(msg *AgentMessage) (int64, error) {
 func (m *AgentMessage) ValidateMessage() error {
 	// close_channel message header is 112 bytes
 	if m.headerLength > agentMsgHeaderLen || m.headerLength < agentMsgHeaderLen-4 {
-		return errors.New("invalid message header length")
+		return fmt.Errorf("%w: invalid header length", ErrInvalidAgentMessage)
 	}
 
 	if m.SchemaVersion < 1 {
-		return errors.New("invalid schema version")
+		return fmt.Errorf("%w: invalid schema version", ErrInvalidAgentMessage)
 	}
 
 	// this seems to be a good minimum number after checking the SSM agent source code
 	if len(m.MessageType) < 10 {
-		return errors.New("invalid message type")
+		return fmt.Errorf("%w: invalid type", ErrInvalidAgentMessage)
 	}
 
 	if m.CreatedDate.IsZero() {
-		return errors.New("invalid message date")
+		return fmt.Errorf("%w: invalid date", ErrInvalidAgentMessage)
 	}
 
 	if len(m.MessageID[:]) != 16 {
-		return errors.New("invalid message id")
+		return fmt.Errorf("%w: invalid id", ErrInvalidAgentMessage)
 	}
 
 	if len(m.Payload) != int(m.PayloadLength) {
-		return fmt.Errorf("payload length mismatch, WANT: %d, GOT: %d", m.PayloadLength, len(m.Payload))
+		return fmt.Errorf("%w: payload length mismatch (want %d, got %d)", ErrInvalidAgentMessage, m.PayloadLength, len(m.Payload))
 	}
 
 	if !bytes.Equal(m.sha256PayloadDigest(), m.PayloadDigest) {
-		return errors.New("payload digest mismatch")
+		return fmt.Errorf("%w: payload digest mismatch", ErrInvalidAgentMessage)
 	}
 
 	return nil
