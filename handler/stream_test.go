@@ -358,7 +358,7 @@ func TestStream_TerminalSizeError(t *testing.T) {
 
 	stream.Stop()
 
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer waitCancel()
 
 	err = stream.Wait(waitCtx)

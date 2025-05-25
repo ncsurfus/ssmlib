@@ -192,7 +192,19 @@ func (m *AgentMessage) ValidateMessage() error {
 // UnmarshalBinary reads the wire format data and updates the fields in the method receiver.  Satisfies the
 // encoding.BinaryUnmarshaler interface.
 func (m *AgentMessage) UnmarshalBinary(data []byte) error {
+	// Check minimum required length for basic header fields
+	if len(data) < 4 {
+		return fmt.Errorf("%w: data too short for header length field", ErrInvalidAgentMessage)
+	}
+
 	m.headerLength = binary.BigEndian.Uint32(data)
+
+	// Check if we have enough data for the basic header
+	minHeaderSize := 80 + sha256.Size // up to PayloadDigest
+	if len(data) < minHeaderSize {
+		return fmt.Errorf("%w: data too short for basic header (need %d, got %d)", ErrInvalidAgentMessage, minHeaderSize, len(data))
+	}
+
 	m.MessageType = parseMessageType(data[4:36])
 	m.SchemaVersion = binary.BigEndian.Uint32(data[36:40])
 	m.CreatedDate = parseTime(data[40:48])
@@ -203,11 +215,25 @@ func (m *AgentMessage) UnmarshalBinary(data []byte) error {
 
 	// The channel_closed message has a header length of 112 bytes, assuming this is what's dropped
 	if m.headerLength == agentMsgHeaderLen {
+		if len(data) < int(m.headerLength) {
+			return fmt.Errorf("%w: data too short for full header (need %d, got %d)", ErrInvalidAgentMessage, m.headerLength, len(data))
+		}
 		m.PayloadType = PayloadType(binary.BigEndian.Uint32(data[112:m.headerLength]))
 	}
 
 	payloadLenEnd := m.headerLength + 4
+	if len(data) < int(payloadLenEnd) {
+		return fmt.Errorf("%w: data too short for payload length field (need %d, got %d)", ErrInvalidAgentMessage, payloadLenEnd, len(data))
+	}
+
 	m.PayloadLength = binary.BigEndian.Uint32(data[m.headerLength:payloadLenEnd])
+
+	// Check if we have enough data for the payload
+	totalRequired := payloadLenEnd + m.PayloadLength
+	if len(data) < int(totalRequired) {
+		return fmt.Errorf("%w: data too short for payload (need %d, got %d)", ErrInvalidAgentMessage, totalRequired, len(data))
+	}
+
 	m.Payload = data[payloadLenEnd : payloadLenEnd+m.PayloadLength]
 
 	return m.ValidateMessage()
