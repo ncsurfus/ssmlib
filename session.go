@@ -197,6 +197,8 @@ func (s *Session) Read(ctx context.Context) (*messages.AgentMessage, error) {
 	select {
 	case message := <-s.incomingDataMessages:
 		return message, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("read cancelled: %w", ctx.Err())
 	case <-s.errctx.Done():
 		return nil, fmt.Errorf("session is stopped: %w", io.EOF)
 	}
@@ -208,6 +210,8 @@ func (s *Session) Write(ctx context.Context, message *messages.AgentMessage) err
 	select {
 	case s.outgoingMessages <- message:
 		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("write cancelled: %w", ctx.Err())
 	case <-s.errctx.Done():
 		return fmt.Errorf("session is stopped: %w", io.EOF)
 	}

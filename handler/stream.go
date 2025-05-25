@@ -57,18 +57,25 @@ func (s *Stream) getTerminalSize(writer io.Writer) TerminalSize {
 	})
 }
 
-func (s *Stream) Start(ctx context.Context, session SessionReaderWriter, reader io.Reader, writer io.Writer) error {
+func (s *Stream) Start(ctx context.Context, session SessionReaderWriter, reader io.ReadCloser, writer io.WriteCloser) error {
 	s.init()
 
 	// Cleanup resources
 	s.errgrp.Go(func() error {
+		s.Log.Debug("Listening for internal cancellation")
+		defer s.Log.Debug("Internal cancellation triggered.")
+
 		<-s.errctx.Done()
 		s.signalStop()
+
 		return nil
 	})
 
 	// Handle a Stop() event.
 	s.errgrp.Go(func() error {
+		s.Log.Debug("Listening for stop event")
+		defer s.Log.Debug("Stop event triggered.")
+
 		// The cleanup resources goroutine will ensure stop gets closed.
 		<-s.stopped
 		return io.EOF
@@ -76,11 +83,17 @@ func (s *Stream) Start(ctx context.Context, session SessionReaderWriter, reader 
 
 	// Copy data from SSM to the writer
 	s.errgrp.Go(func() error {
+		s.Log.Debug("Starting copy of session to writer")
+		defer s.Log.Debug("Stopping copy of session to writer.")
+
 		return CopySessionReaderToWriter(s.errctx, writer, session)
 	})
 
 	// Copy data from the reader to SSM
 	s.errgrp.Go(func() error {
+		s.Log.Debug("Starting copy of reader to session")
+		defer s.Log.Debug("Stopping copy of reader to session.")
+
 		return CopyReaderToSessionWriter(s.errctx, reader, session)
 	})
 

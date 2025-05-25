@@ -28,16 +28,19 @@ func CopySessionReaderToWriter(ctx context.Context, writer io.Writer, reader Ses
 
 func CopyReaderToSessionWriter(ctx context.Context, reader io.Reader, writer SessionWriter) error {
 	for {
+		// callers to read should always process any bytes first *and then* handle the error.)
 		buffer := make([]byte, 1024)
-		bytes, err := reader.Read(buffer)
-		if err != nil {
-			return fmt.Errorf("failed to read data from reader: %w", err)
+		bytes, readerErr := reader.Read(buffer)
+		if bytes > 0 {
+			message := messages.NewStreamMessage(buffer[:bytes])
+			writerErr := writer.Write(ctx, message)
+			if writerErr != nil {
+				return fmt.Errorf("failed to write message to session: %w", writerErr)
+			}
 		}
 
-		message := messages.NewStreamMessage(buffer[:bytes])
-		err = writer.Write(ctx, message)
-		if err != nil {
-			return fmt.Errorf("failed to write message to session: %w", err)
+		if readerErr != nil {
+			return fmt.Errorf("failed to read data from reader: %w", readerErr)
 		}
 	}
 }
