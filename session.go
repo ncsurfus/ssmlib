@@ -3,6 +3,7 @@ package ssmlib
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,21 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/ncsurfus/ssmlib/messages"
 	"golang.org/x/sync/errgroup"
+)
+
+var (
+	ErrWebsocketDialFailed        = errors.New("failed to dial ssm websocket url")
+	ErrOpenDataChannelFailed      = errors.New("failed to open data channel")
+	ErrSendMessageFailed          = errors.New("failed to send message")
+	ErrRemoteSSMClosedPipe        = errors.New("remote ssm closed channel")
+	ErrCreateAcknowledgmentFailed = errors.New("failed to create acknowledgment")
+	ErrQueueAcknowledgmentFailed  = errors.New("failed to queue acknowledgment")
+	ErrSessionStopped             = errors.New("session is stopped")
+	ErrAckTimeout                 = errors.New("remote did not ack message before timeout")
+	ErrReadWebsocketMessageFailed = errors.New("failed to get next message")
+	ErrUnmarshalMessageFailed     = errors.New("failed to unmarshal message")
+	ErrSendAcknowledgmentFailed   = errors.New("failed to send acknowledgment")
+	errSessionStopRequested       = errors.New("session stopped gracefully")
 )
 
 const maxInflightMessages = 50
@@ -83,10 +99,7 @@ func (s *Session) init() {
 		if s.Dialer == nil {
 			s.Dialer = WebsocketDialerFunc(func(url string) (WebsocketConection, error) {
 				ws, _, err := websocket.DefaultDialer.Dial(url, http.Header{})
-				if err != nil {
-					return nil, fmt.Errorf("failed to dial websocket stream: %w", err)
-				}
-				return ws, nil
+				return ws, err
 			})
 		}
 
@@ -106,14 +119,14 @@ func (s *Session) Start(ctx context.Context, streamURL string, tokenValue string
 	s.Log.Debug("Dialing StreamURL")
 	ws, err := s.Dialer.Dial(streamURL)
 	if err != nil {
-		return fmt.Errorf("failed to dial ssm websocket url: %w", err)
+		return fmt.Errorf("%w: %w", ErrWebsocketDialFailed, err)
 	}
 
 	s.Log.Debug("Opening DataChannel")
 	err = s.openDataChannel(ws, tokenValue)
 	if err != nil {
 		ws.Close()
-		return fmt.Errorf("failed to open data channel: %w", err)
+		return fmt.Errorf("%w: %w", ErrOpenDataChannelFailed, err)
 	}
 
 	// We should note that we should never return nil from the errgroup, except
@@ -131,7 +144,7 @@ func (s *Session) Start(ctx context.Context, streamURL string, tokenValue string
 	// Handle a Stop() event.
 	s.errgrp.Go(func() error {
 		<-s.stopped
-		return io.EOF
+		return errSessionStopRequested
 	})
 
 	// Handle messages being sent
@@ -209,10 +222,10 @@ func (s *Session) Wait(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("wait cancelled: %w", ctx.Err())
+		return ctx.Err()
 	case <-s.errctx.Done():
 		err := s.errgrp.Wait()
-		if err != io.EOF {
+		if err != errSessionStopRequested {
 			return err
 		}
 		return nil
@@ -226,9 +239,9 @@ func (s *Session) Read(ctx context.Context) (*messages.AgentMessage, error) {
 	case message := <-s.incomingDataMessages:
 		return message, nil
 	case <-ctx.Done():
-		return nil, fmt.Errorf("read cancelled: %w", ctx.Err())
+		return nil, ctx.Err()
 	case <-s.errctx.Done():
-		return nil, fmt.Errorf("session is stopped: %w", context.Cause(s.errctx))
+		return nil, fmt.Errorf("%w: %w", ErrSessionStopped, context.Cause(s.errctx))
 	}
 }
 
@@ -239,9 +252,9 @@ func (s *Session) Write(ctx context.Context, message *messages.AgentMessage) err
 	case s.outgoingMessages <- message:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("write cancelled: %w", ctx.Err())
+		return ctx.Err()
 	case <-s.errctx.Done():
-		return fmt.Errorf("session is stopped: %w", context.Cause(s.errctx))
+		return fmt.Errorf("%w: %w", ErrSessionStopped, context.Cause(s.errctx))
 	}
 }
 
@@ -312,6 +325,7 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 				// TODO: Perhaps we should store any error messages, so that way the error can bubble back up
 				// in resendTimeout....
 				s.Log.Error("failed to send message", "messageType", message.MessageType, "error", err)
+				return ErrSendMessageFailed
 			}
 			nextOutgoingSequenceNumber += 1
 
@@ -322,11 +336,11 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 
 		case <-resendTimeout:
 			s.Log.Error("Remote didn't acknowledge message!", "sequenceNumber", resendSequenceNumber)
-			return fmt.Errorf("remote did not ack message before timeout")
+			return ErrAckTimeout
 
 		case <-ctx.Done():
 			s.Log.Error("Writer stopping due to cancellation", "error", ctx.Err())
-			return fmt.Errorf("failed to send outgoing messages: %w", ctx.Err())
+			return context.Cause(ctx)
 		}
 	}
 }
@@ -343,12 +357,12 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 
 		data, err := s.readMessage(socket)
 		if err != nil {
-			return fmt.Errorf("failed to get next message: %w", err)
+			return fmt.Errorf("%w: %w", ErrReadWebsocketMessageFailed, err)
 		}
 
 		msg := &messages.AgentMessage{}
 		if err := msg.UnmarshalBinary(data); err != nil {
-			return fmt.Errorf("failed to unmarshal message: %w", err)
+			return fmt.Errorf("%w: %w", ErrUnmarshalMessageFailed, err)
 		}
 
 		s.Log.Debug("Received Message", "MessageType", msg.MessageType)
@@ -362,7 +376,7 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 				select {
 				case s.ackReceived <- acknowledgedSequence:
 				case <-ctx.Done():
-					return fmt.Errorf("failed to send acknowledgment into queue: %w", ctx.Err())
+					return context.Cause(ctx)
 				}
 			}
 
@@ -388,7 +402,7 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 				case s.incomingDataMessages <- msg:
 					incomingSequenceId += 1
 				case <-ctx.Done():
-					return fmt.Errorf("failed to send data message into queue: %w", ctx.Err())
+					return context.Cause(ctx)
 				}
 			} else {
 				s.Log.Debug("Unexpected Sequence Number", "ExpectedSequence", incomingSequenceId, "ActualSequence", msg.SequenceNumber)
@@ -396,7 +410,7 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 
 		// Remote session is closing the session
 		case messages.ChannelClosed:
-			return fmt.Errorf("remote ssm closed channel: %w", io.ErrClosedPipe)
+			return fmt.Errorf("%w: %w", ErrRemoteSSMClosedPipe, io.ErrClosedPipe)
 
 		default:
 			s.Log.Warn("Received an unknown message type", "messageType", msg.MessageType)
@@ -441,7 +455,7 @@ func (s *Session) sendAcknowledgeMessage(ctx context.Context, incomingMessage *m
 
 	payload, err := json.Marshal(ack)
 	if err != nil {
-		return fmt.Errorf("failed to create acknowledgment: %w", err)
+		return fmt.Errorf("%w: %w", ErrCreateAcknowledgmentFailed, err)
 	}
 
 	ackMessage := messages.NewAcknowledgementMessage(incomingMessage.SequenceNumber, payload)
@@ -449,6 +463,6 @@ func (s *Session) sendAcknowledgeMessage(ctx context.Context, incomingMessage *m
 	case s.outgoingControlMessages <- ackMessage:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("failed to queue acknowledgment: %w", ctx.Err())
+		return fmt.Errorf("%w: %w", ErrQueueAcknowledgmentFailed, ctx.Err())
 	}
 }
