@@ -17,11 +17,22 @@ var errStreamStopRequested = errors.New("stream stopped requested")
 
 const TerminalWindowIntervalMilliseconds = 250
 
+// Stream provides bidirectional streaming over an SSM session, typically used for
+// interactive shell sessions. It copies data between local Reader/Writer interfaces
+// and the SSM session, while also managing terminal size updates for proper display
+// formatting on the remote system.
+//
+// The Stream handler automatically detects terminal capabilities and periodically
+// sends terminal size updates to ensure proper formatting of interactive applications.
 type Stream struct {
-	Reader       io.Reader
-	Writer       io.Writer
+	// Reader provides input data to send to the remote session (default os.Stdin)
+	Reader io.Reader
+	// Writer receives output data from the remote session (default os.Stdout)
+	Writer io.Writer
+	// TerminalSize provides terminal dimensions for the remote session
 	TerminalSize TerminalSize
-	Log          *slog.Logger
+	// Log provides structured logging for stream events
+	Log *slog.Logger
 
 	errgrp *errgroup.Group
 	errctx context.Context
@@ -68,6 +79,15 @@ func (s *Stream) getTerminalSize() TerminalSize {
 	})
 }
 
+// Start initializes the streaming handler and begins bidirectional data copying.
+// It starts background goroutines to copy data between the local Reader/Writer
+// and the SSM session, and also starts a goroutine to periodically update the
+// terminal size on the remote system. The method returns after all background
+// processing has been started.
+//
+// Parameters:
+//   - ctx: Context for the startup process (not used for handler lifetime)
+//   - session: The SSM session to stream data through
 func (s *Stream) Start(ctx context.Context, session SessionReaderWriter) error {
 	s.init()
 
@@ -136,6 +156,14 @@ func (s *Stream) Start(ctx context.Context, session SessionReaderWriter) error {
 	return nil
 }
 
+// Wait blocks until the handler has completely stopped or the context is cancelled.
+// If the context is cancelled, Wait returns immediately with the context error,
+// but the handler and its background goroutines may still be running. This means
+// that if the context cancels, the handler could still be active.
+//
+// Wait should be called after Start() to block until the handler terminates.
+// It returns nil if the handler stopped gracefully, or an error if it stopped
+// due to a failure.
 func (s *Stream) Wait(ctx context.Context) error {
 	s.init()
 
@@ -151,6 +179,13 @@ func (s *Stream) Wait(ctx context.Context) error {
 	}
 }
 
+// Stop initiates a graceful shutdown of the streaming handler.
+// This method does NOT wait for the handler to fully shutdown - it only signals
+// the shutdown request. The handler and its background goroutines may continue
+// running after Stop() returns. Use Wait() to block until the handler has
+// completely stopped.
+//
+// Stop() is safe to call multiple times and from multiple goroutines.
 func (s *Stream) Stop() {
 	s.init()
 	s.signalStop()

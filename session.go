@@ -54,10 +54,17 @@ type WebsocketConection interface {
 	Close() error
 }
 
+// Session manages an AWS Systems Manager (SSM) session connection over WebSocket.
+// It handles the bidirectional communication protocol including message acknowledgments,
+// sequencing, and retransmission. The Session coordinates with a Handler to process
+// the actual data stream (e.g., shell commands, port forwarding).
 type Session struct {
+	// Handler processes the data stream for this session (e.g., Stream, MuxPortForward)
 	Handler Handler
-	Dialer  WebsocketDialer
-	Log     *slog.Logger
+	// Dialer establishes the WebSocket connection to the SSM service
+	Dialer WebsocketDialer
+	// Log provides structured logging for session events
+	Log *slog.Logger
 
 	// Messages that are queued to be sent and do not need
 	// acknowledgments.
@@ -113,6 +120,18 @@ func (s *Session) signalStop() {
 	s.stopOnce.Do(func() { close(s.stopped) })
 }
 
+// Start establishes the SSM session connection and begins processing messages.
+// It dials the WebSocket connection, performs the initial handshake, and starts
+// background goroutines to handle message processing. The method returns after
+// the Handler has been successfully started, but the session continues running
+// in the background until Stop() is called or an error occurs.
+//
+// Parameters:
+//   - ctx: Context for the handler startup (not used for the session lifetime)
+//   - streamURL: The WebSocket URL for the SSM session
+//   - tokenValue: Authentication token for the SSM session
+//
+// Returns an error if the connection cannot be established or the handler fails to start.
 func (s *Session) Start(ctx context.Context, streamURL string, tokenValue string) error {
 	s.init()
 
@@ -209,6 +228,13 @@ func (s *Session) openDataChannel(socket WebsocketConection, tokenValue string) 
 	return nil
 }
 
+// Stop initiates a graceful shutdown of the session by sending a terminate message.
+// This method does NOT wait for the session to fully shutdown - it only signals
+// the shutdown request. The session and its background goroutines may continue
+// running after Stop() returns. Use Wait() to block until the session has
+// completely stopped.
+//
+// Stop() is safe to call multiple times and from multiple goroutines.
 func (s *Session) Stop() {
 	s.init()
 	defer s.signalStop()
@@ -222,6 +248,14 @@ func (s *Session) Stop() {
 	}
 }
 
+// Wait blocks until the session has completely stopped or the context is cancelled.
+// If the context is cancelled, Wait returns immediately with the context error,
+// but the session and its background goroutines may still be running. This means
+// that if the context cancels, the session/handler could still be active.
+//
+// Wait should be called after Start() to block until the session terminates.
+// It returns nil if the session stopped gracefully, or an error if it stopped
+// due to a failure.
 func (s *Session) Wait(ctx context.Context) error {
 	s.init()
 
@@ -237,6 +271,12 @@ func (s *Session) Wait(ctx context.Context) error {
 	}
 }
 
+// Read retrieves the next incoming data message from the SSM session.
+// This method blocks until a message is available, the context is cancelled,
+// or the session has stopped. Only data messages are returned through this
+// method - control messages (acknowledgments, etc.) are handled internally.
+//
+// Returns ErrSessionStopped if the session has been stopped.
 func (s *Session) Read(ctx context.Context) (*messages.AgentMessage, error) {
 	s.init()
 
@@ -250,6 +290,12 @@ func (s *Session) Read(ctx context.Context) (*messages.AgentMessage, error) {
 	}
 }
 
+// Write sends a data message through the SSM session.
+// The message will be queued for transmission with proper sequencing and
+// acknowledgment handling. This method blocks until the message is queued,
+// the context is cancelled, or the session has stopped.
+//
+// Returns ErrSessionStopped if the session has been stopped.
 func (s *Session) Write(ctx context.Context, message *messages.AgentMessage) error {
 	s.init()
 

@@ -36,7 +36,15 @@ type muxDialRequest struct {
 	response chan muxDialResponse
 }
 
+// MuxPortForward provides multiplexed port forwarding over an SSM session using smux.
+// It performs a handshake with the remote SSM agent to establish multiplexing capabilities,
+// then creates a smux session over the SSM data stream. This allows multiple concurrent
+// connections to be tunneled through a single SSM session.
+//
+// The handler verifies that the remote SSM agent supports multiplexing before proceeding.
+// If multiplexing is not supported, Start() will return an error.
 type MuxPortForward struct {
+	// Log provides structured logging for multiplexing events
 	Log *slog.Logger
 
 	dialRequests chan muxDialRequest
@@ -65,6 +73,17 @@ func (m *MuxPortForward) signalStop() {
 	m.stopOnce.Do(func() { close(m.stopped) })
 }
 
+// Start initializes the multiplexed port forwarding handler.
+// It performs a handshake with the remote SSM agent to verify multiplexing support,
+// creates a smux session over the SSM data stream, and starts background goroutines
+// to handle data copying and dial requests. The method returns after all background
+// processing has been started.
+//
+// Parameters:
+//   - ctx: Context for the startup process (not used for handler lifetime)
+//   - session: The SSM session to multiplex over
+//
+// Returns ErrRemoteVersionNotSupported if the remote agent doesn't support multiplexing.
 func (m *MuxPortForward) Start(ctx context.Context, session SessionReaderWriter) error {
 	m.init()
 
@@ -132,11 +151,26 @@ func (m *MuxPortForward) Start(ctx context.Context, session SessionReaderWriter)
 	return nil
 }
 
+// Stop initiates a graceful shutdown of the multiplexed port forwarding handler.
+// This method does NOT wait for the handler to fully shutdown - it only signals
+// the shutdown request. The handler and its background goroutines may continue
+// running after Stop() returns. Use Wait() to block until the handler has
+// completely stopped.
+//
+// Stop() is safe to call multiple times and from multiple goroutines.
 func (m *MuxPortForward) Stop() {
 	m.init()
 	defer m.signalStop()
 }
 
+// Wait blocks until the handler has completely stopped or the context is cancelled.
+// If the context is cancelled, Wait returns immediately with the context error,
+// but the handler and its background goroutines may still be running. This means
+// that if the context cancels, the handler could still be active.
+//
+// Wait should be called after Start() to block until the handler terminates.
+// It returns nil if the handler stopped gracefully, or an error if it stopped
+// due to a failure.
 func (m *MuxPortForward) Wait(ctx context.Context) error {
 	m.init()
 
@@ -170,6 +204,15 @@ func (m *MuxPortForward) handleDialRequests(ctx context.Context, smuxSession *sm
 	}
 }
 
+// Dial creates a new multiplexed connection over the SSM session.
+// This method requests a new smux stream from the multiplexing session and
+// returns it as a net.Conn. The connection can be used for bidirectional
+// communication and will be automatically cleaned up when closed.
+//
+// This method blocks until a connection is established, the context is cancelled,
+// or the handler has stopped. Multiple concurrent calls to Dial are supported.
+//
+// Returns ErrFailedDial if the connection cannot be established.
 func (m *MuxPortForward) Dial(ctx context.Context) (net.Conn, error) {
 	m.init()
 
