@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ncsurfus/ssmlib/session"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/term"
 )
@@ -58,7 +57,7 @@ func (s *Stream) getTerminalSize(writer io.Writer) TerminalSize {
 	})
 }
 
-func (s *Stream) Start(ctx context.Context, session session.ReaderWriter, reader io.Reader, writer io.Writer) error {
+func (s *Stream) Start(ctx context.Context, session SessionReaderWriter, reader io.Reader, writer io.Writer) error {
 	s.init()
 
 	// Cleanup resources

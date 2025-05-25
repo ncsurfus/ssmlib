@@ -8,7 +8,6 @@ import (
 	"net"
 	"sync"
 
-	"github.com/ncsurfus/ssmlib/session"
 	"github.com/ncsurfus/ssmlib/version"
 	"github.com/xtaci/smux"
 	"golang.org/x/sync/errgroup"
@@ -55,7 +54,7 @@ func (m *MuxPortForward) signalStop() {
 	m.stopOnce.Do(func() { close(m.stopped) })
 }
 
-func (m *MuxPortForward) Start(ctx context.Context, session session.ReaderWriter) error {
+func (m *MuxPortForward) Start(ctx context.Context, session SessionReaderWriter) error {
 	m.init()
 
 	// Perform the handshake.

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	"github.com/ncsurfus/ssmlib/messages"
-	"github.com/ncsurfus/ssmlib/session"
 )
 
 // This hasn't changed for years...
@@ -17,7 +16,7 @@ type HandshakeResult struct {
 	RemoteVersion string
 }
 
-func PerformHandshake(ctx context.Context, log *slog.Logger, session session.ReaderWriter) (HandshakeResult, error) {
+func PerformHandshake(ctx context.Context, log *slog.Logger, session SessionReaderWriter) (HandshakeResult, error) {
 	// Wait for handshake request
 	handshakeRequest := messages.HandshakeRequestPayload{}
 	for {

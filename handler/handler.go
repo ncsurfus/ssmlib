@@ -6,10 +6,9 @@ import (
 	"io"
 
 	"github.com/ncsurfus/ssmlib/messages"
-	"github.com/ncsurfus/ssmlib/session"
 )
 
-func CopySessionReaderToWriter(ctx context.Context, writer io.Writer, reader session.Reader) error {
+func CopySessionReaderToWriter(ctx context.Context, writer io.Writer, reader SessionReader) error {
 	for {
 		message, err := reader.Read(ctx)
 		if err != nil {
@@ -27,7 +26,7 @@ func CopySessionReaderToWriter(ctx context.Context, writer io.Writer, reader ses
 	}
 }
 
-func CopyReaderToSessionWriter(ctx context.Context, reader io.Reader, writer session.Writer) error {
+func CopyReaderToSessionWriter(ctx context.Context, reader io.Reader, writer SessionWriter) error {
 	for {
 		buffer := make([]byte, 1024)
 		bytes, err := reader.Read(buffer)
@@ -43,13 +42,13 @@ func CopyReaderToSessionWriter(ctx context.Context, reader io.Reader, writer ses
 	}
 }
 
-func SetTerminalSize(ctx context.Context, session session.Writer, width int, height int) error {
+func SetTerminalSize(ctx context.Context, writer SessionWriter, width int, height int) error {
 	msg, err := messages.NewSizeMessage(width, height)
 	if err != nil {
 		return fmt.Errorf("failed to create size message: %w", err)
 	}
 
-	err = session.Write(ctx, msg)
+	err = writer.Write(ctx, msg)
 	if err != nil {
 		return fmt.Errorf("failed to write size message to session: %w", err)
 	}
