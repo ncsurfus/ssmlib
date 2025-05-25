@@ -55,8 +55,8 @@ func NewStreamMessage(data []byte) *AgentMessage {
 	return msg
 }
 
-func NewSizeMessage(rows uint32, cols uint32) (*AgentMessage, error) {
-	input := map[string]uint32{"rows": rows, "cols": cols}
+func NewSizeMessage(width int, height int) (*AgentMessage, error) {
+	input := map[string]int{"cols": width, "rows": height}
 	payload, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create terminal resize message: %w", err)

@@ -6,17 +6,18 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
-	tsize "github.com/kopoli/go-terminal-size"
-	"github.com/ncsurfus/ssmlib/messages"
 	"github.com/ncsurfus/ssmlib/session"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/term"
 )
 
+const TerminalWindowIntervalMilliseconds = 250
+
 type Stream struct {
-	Reader io.Reader
-	Writer io.Writer
-	Log    *slog.Logger
+	TerminalSize TerminalSize
+	Log          *slog.Logger
 
 	errgrp *errgroup.Group
 	errctx context.Context
@@ -40,7 +41,24 @@ func (s *Stream) signalStop() {
 	s.stopOnce.Do(func() { close(s.stopped) })
 }
 
-func (s *Stream) Start(ctx context.Context, session session.ReaderWriter) error {
+func (s *Stream) getTerminalSize(writer io.Writer) TerminalSize {
+	if s.TerminalSize != nil {
+		return s.TerminalSize
+	}
+
+	// If our output has an Fd method, like *os.File, then we should default to that.
+	// Otherwise, just fallback to a safe default.
+	fd, ok := writer.(interface{ Fd() uintptr })
+	if !ok {
+		return DefaultTerminalSizeFunc
+	}
+
+	return TerminalSizeFunc(func() (width int, height int, err error) {
+		return term.GetSize(int(fd.Fd()))
+	})
+}
+
+func (s *Stream) Start(ctx context.Context, session session.ReaderWriter, reader io.Reader, writer io.Writer) error {
 	s.init()
 
 	// Cleanup resources
@@ -59,53 +77,37 @@ func (s *Stream) Start(ctx context.Context, session session.ReaderWriter) error 
 
 	// Copy data from SSM to the writer
 	s.errgrp.Go(func() error {
-		return CopySessionReaderToWriter(s.errctx, s.Writer, session)
+		return CopySessionReaderToWriter(s.errctx, writer, session)
 	})
 
 	// Copy data from the reader to SSM
 	s.errgrp.Go(func() error {
-		return CopyReaderToSessionWriter(s.errctx, s.Reader, session)
+		return CopyReaderToSessionWriter(s.errctx, reader, session)
 	})
 
 	// Update Terminal Size
 	s.errgrp.Go(func() error {
 		// This failing should not force the errgrp to exit!
-		listener, err := tsize.NewSizeListener()
-		if err != nil {
-			s.Log.Warn("Failed to initialize terminal listener. Cannot get terminal size!")
-			return nil
-		}
-		defer listener.Close()
-
-		updateSize := func(size tsize.Size) {
-			msg, err := messages.NewSizeMessage(uint32(size.Height), uint32(size.Width))
-			if err != nil {
-				s.Log.Warn("failed to create terminal size message!", "error", err)
-				return
-			}
-			err = session.Write(s.errctx, msg)
-			if err != nil {
-				s.Log.Warn("failed to send terminal size message!", "error", err)
-				return
-			}
-		}
-
-		initialSize, err := tsize.GetSize()
-		if err != nil {
-			s.Log.Warn("failed to get initial terminal size!", "error", err)
-		} else {
-			updateSize(initialSize)
-		}
-
+		terminalSize := s.getTerminalSize(writer)
+		lastWidth, lastHeight := 0, 0
 		for {
 			select {
 			case <-s.errctx.Done():
 				return nil
-			case size := <-listener.Change:
-				updateSize(size)
+			case <-time.After(TerminalWindowIntervalMilliseconds * time.Millisecond):
+				width, height, err := terminalSize.Size()
+				if err != nil {
+					s.Log.Warn("failed to get terminal size!", "error", err)
+				}
+				if lastWidth != width || lastHeight != height {
+					err = SetTerminalSize(s.errctx, session, width, height)
+					if err != nil {
+						s.Log.Warn("failed to set terminal size!", "error", err)
+					}
+					lastWidth, lastHeight = width, height
+				}
 			}
 		}
-
 	})
 
 	return nil

@@ -43,8 +43,8 @@ func CopyReaderToSessionWriter(ctx context.Context, reader io.Reader, writer ses
 	}
 }
 
-func SetTerminalSize(ctx context.Context, session session.Writer, rows uint32, cols uint32) error {
-	msg, err := messages.NewSizeMessage(rows, cols)
+func SetTerminalSize(ctx context.Context, session session.Writer, width int, height int) error {
+	msg, err := messages.NewSizeMessage(width, height)
 	if err != nil {
 		return fmt.Errorf("failed to create size message: %w", err)
 	}
