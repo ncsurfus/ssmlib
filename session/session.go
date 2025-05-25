@@ -38,18 +38,9 @@ type WebsocketConection interface {
 	Close() error
 }
 
-func NewSession(streamURL string, tokenValue string) *Session {
-	return &Session{
-		StreamURL:  streamURL,
-		TokenValue: tokenValue,
-	}
-}
-
 type Session struct {
-	StreamURL  string
-	TokenValue string
-	Dialer     WebsocketDialer
-	Log        *slog.Logger
+	Dialer WebsocketDialer
+	Log    *slog.Logger
 
 	// Messages that are queued to be sent and do not need
 	// acknowledgments.
@@ -104,25 +95,17 @@ func (s *Session) signalStop() {
 	s.stopOnce.Do(func() { close(s.stopped) })
 }
 
-func (s *Session) Start(ctx context.Context) error {
+func (s *Session) Start(ctx context.Context, streamURL string, tokenValue string) error {
 	s.init()
 
-	if s.TokenValue == "" {
-		return fmt.Errorf("TokenValue cannot be empty")
-	}
-
-	if s.StreamURL == "" {
-		return fmt.Errorf("StreamURL cannot be empty")
-	}
-
 	s.Log.Debug("Dialing StreamURL")
-	ws, err := s.Dialer.Dial(s.StreamURL)
+	ws, err := s.Dialer.Dial(streamURL)
 	if err != nil {
 		return fmt.Errorf("failed to dial ssm websocket url: %w", err)
 	}
 
 	s.Log.Debug("Opening DataChannel")
-	err = s.openDataChannel(ws)
+	err = s.openDataChannel(ws, tokenValue)
 	if err != nil {
 		ws.Close()
 		return fmt.Errorf("failed to open data channel: %w", err)
@@ -159,11 +142,11 @@ func (s *Session) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *Session) openDataChannel(socket WebsocketConection) error {
+func (s *Session) openDataChannel(socket WebsocketConection, tokenValue string) error {
 	openDataChannelMessage := map[string]string{
 		"MessageSchemaVersion": "1.0",
 		"RequestId":            uuid.NewString(),
-		"TokenValue":           s.TokenValue,
+		"TokenValue":           tokenValue,
 		"ClientId":             uuid.NewString(),
 		"ClientVersion":        clientVersion,
 	}
