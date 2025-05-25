@@ -3,10 +3,18 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/ncsurfus/ssmlib/messages"
+)
+
+var (
+	ErrSessionHandshake    = errors.New("failed to do session handshake")
+	ErrUnmarshalHandshake  = errors.New("failed to unmarshal handshake request")
+	ErrCreateHandshakeResp = errors.New("failed to create handshake response")
+	ErrSendHandshakeResp   = errors.New("failed to send handshake response to session")
 )
 
 // This hasn't changed for years...
@@ -22,12 +30,12 @@ func PerformHandshake(ctx context.Context, log *slog.Logger, session SessionRead
 	for {
 		msg, err := session.Read(ctx)
 		if err != nil {
-			return HandshakeResult{}, fmt.Errorf("failed to do session handshake: %w", err)
+			return HandshakeResult{}, fmt.Errorf("%w: %w", ErrSessionHandshake, err)
 		}
 
 		if msg.PayloadType == messages.HandshakeRequest {
 			if err := json.Unmarshal(msg.Payload, &handshakeRequest); err != nil {
-				return HandshakeResult{}, fmt.Errorf("failed to unmarshal handshake request: %w", err)
+				return HandshakeResult{}, fmt.Errorf("%w: %w", ErrUnmarshalHandshake, err)
 			}
 			break
 		}
@@ -39,19 +47,19 @@ func PerformHandshake(ctx context.Context, log *slog.Logger, session SessionRead
 	// like verifying the SessionType is accurate...
 	resp, err := messages.NewHandshakeResponse(ClientVersion, handshakeRequest.RequestedClientActions)
 	if err != nil {
-		return HandshakeResult{}, fmt.Errorf("failed to create handshake response: %w", err)
+		return HandshakeResult{}, fmt.Errorf("%w: %w", ErrCreateHandshakeResp, err)
 	}
 
 	err = session.Write(ctx, resp)
 	if err != nil {
-		return HandshakeResult{}, fmt.Errorf("failed to send handshake response to session: %w", err)
+		return HandshakeResult{}, fmt.Errorf("%w: %w", ErrSendHandshakeResp, err)
 	}
 
 	// Wait for handshake completion
 	for {
 		msg, err := session.Read(ctx)
 		if err != nil {
-			return HandshakeResult{}, fmt.Errorf("failed to do session handshake: %w", err)
+			return HandshakeResult{}, fmt.Errorf("%w: %w", ErrSessionHandshake, err)
 		}
 
 		if msg.PayloadType == messages.HandshakeComplete {

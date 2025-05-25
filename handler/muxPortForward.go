@@ -2,8 +2,8 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -11,6 +11,17 @@ import (
 	"github.com/ncsurfus/ssmlib/version"
 	"github.com/xtaci/smux"
 	"golang.org/x/sync/errgroup"
+)
+
+var (
+	ErrHandshakeFailed           = errors.New("handshake failed")
+	ErrRemoteVersionNotSupported = errors.New("the remote ssm agent version does not support mux")
+	ErrCreateSmuxClientFailed    = errors.New("failed to create smux client")
+	ErrFailedGetDialRequest      = errors.New("failed to get dial request, context cancelled")
+	ErrFailedGetDialResponse     = errors.New("failed to get dial response")
+	ErrFailedRequestDial         = errors.New("failed to request dial")
+	ErrFailedDial                = errors.New("failed to dial")
+	errMuxStopRequested          = errors.New("mux stop requested")
 )
 
 var MuxSupported version.FeatureFlag = "3.0.196.0"
@@ -60,12 +71,12 @@ func (m *MuxPortForward) Start(ctx context.Context, session SessionReaderWriter)
 	// Perform the handshake.
 	handshakeResult, err := PerformHandshake(ctx, m.Log, session)
 	if err != nil {
-		return fmt.Errorf("handshake failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrHandshakeFailed, err)
 	}
 
 	m.Log.Info("Handshake complete with remote agent.", "RemoteVersion", handshakeResult.RemoteVersion)
 	if !MuxSupported.SupportsVersion(handshakeResult.RemoteVersion) {
-		return fmt.Errorf("the remote ssm agent version, %v, does not support mux", handshakeResult.RemoteVersion)
+		return fmt.Errorf("%w: %v", ErrRemoteVersionNotSupported, handshakeResult.RemoteVersion)
 	}
 
 	m.Log.Debug("Initializing smux.")
@@ -79,7 +90,7 @@ func (m *MuxPortForward) Start(ctx context.Context, session SessionReaderWriter)
 	dataConn, clientConn := net.Pipe()
 	smuxSession, err := smux.Client(clientConn, smuxConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create smux client")
+		return fmt.Errorf("%w: %w", ErrCreateSmuxClientFailed, err)
 	}
 
 	// We should note that we should never return nil from the errgroup, except
@@ -97,7 +108,7 @@ func (m *MuxPortForward) Start(ctx context.Context, session SessionReaderWriter)
 	m.errgrp.Go(func() error {
 		// The cleanup resources goroutine will ensure stop gets closed.
 		<-m.stopped
-		return io.EOF
+		return errMuxStopRequested
 	})
 
 	// Copy data from SSM to smux
@@ -128,10 +139,10 @@ func (m *MuxPortForward) Wait(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("wait cancelled: %w", ctx.Err())
+		return ctx.Err()
 	case <-m.errctx.Done():
 		err := m.errgrp.Wait()
-		if err != io.EOF {
+		if err != errMuxStopRequested {
 			return err
 		}
 		return nil
@@ -142,7 +153,7 @@ func (m *MuxPortForward) handleDialRequests(ctx context.Context, smuxSession *sm
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("failed to get dial request, context cancelled: %w", ctx.Err())
+			return context.Cause(ctx)
 		case dialRequest := <-m.dialRequests:
 			m.Log.Debug("opening smux stream")
 			smuxConn, err := smuxSession.OpenStream()
@@ -168,9 +179,9 @@ func (m *MuxPortForward) Dial(ctx context.Context) (net.Conn, error) {
 	go func() {
 		select {
 		case <-ctx.Done():
-			responseC <- muxDialResponse{err: fmt.Errorf("failed to get dial response: %w", ctx.Err())}
+			responseC <- muxDialResponse{err: ctx.Err()}
 		case <-m.errctx.Done():
-			responseC <- muxDialResponse{err: fmt.Errorf("failed to request dial: %w", context.Cause(m.errctx))}
+			responseC <- muxDialResponse{err: fmt.Errorf("%w: %w", ErrFailedDial, context.Cause(m.errctx))}
 		case response := <-request.response:
 			responseC <- response
 		}
@@ -179,15 +190,15 @@ func (m *MuxPortForward) Dial(ctx context.Context) (net.Conn, error) {
 	// Send the dial request
 	select {
 	case <-ctx.Done():
-		return nil, fmt.Errorf("failed to request dial: %w", ctx.Err())
+		return nil, ctx.Err()
 	case <-m.errctx.Done():
-		return nil, fmt.Errorf("failed to request dial: %w", context.Cause(m.errctx))
+		return nil, fmt.Errorf("%w: %w", ErrFailedDial, context.Cause(m.errctx))
 	case m.dialRequests <- request:
 	}
 
 	response := <-responseC
 	if response.err != nil {
-		return nil, fmt.Errorf("failed to dial: %w", response.err)
+		return nil, fmt.Errorf("%w: %w", ErrFailedDial, response.err)
 	}
 	return response.conn, nil
 }

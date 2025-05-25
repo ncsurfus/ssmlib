@@ -2,7 +2,7 @@ package handler
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -12,6 +12,8 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/term"
 )
+
+var errStreamStopRequested = errors.New("stream stopped requested")
 
 const TerminalWindowIntervalMilliseconds = 250
 
@@ -87,7 +89,7 @@ func (s *Stream) Start(ctx context.Context, session SessionReaderWriter) error {
 
 		// The cleanup resources goroutine will ensure stop gets closed.
 		<-s.stopped
-		return io.EOF
+		return errStreamStopRequested
 	})
 
 	// Copy data from SSM to the writer
@@ -139,10 +141,10 @@ func (s *Stream) Wait(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("wait cancelled: %w", ctx.Err())
+		return ctx.Err()
 	case <-s.errctx.Done():
 		err := s.errgrp.Wait()
-		if err != io.EOF {
+		if err != errStreamStopRequested {
 			return err
 		}
 		return nil
