@@ -200,7 +200,7 @@ func (s *Session) Read(ctx context.Context) (*messages.AgentMessage, error) {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("read cancelled: %w", ctx.Err())
 	case <-s.errctx.Done():
-		return nil, fmt.Errorf("session is stopped: %w", io.EOF)
+		return nil, fmt.Errorf("session is stopped: %w", s.errgrp.Wait())
 	}
 }
 
@@ -213,7 +213,7 @@ func (s *Session) Write(ctx context.Context, message *messages.AgentMessage) err
 	case <-ctx.Done():
 		return fmt.Errorf("write cancelled: %w", ctx.Err())
 	case <-s.errctx.Done():
-		return fmt.Errorf("session is stopped: %w", io.EOF)
+		return fmt.Errorf("session is stopped: %w", s.errgrp.Wait())
 	}
 }
 
