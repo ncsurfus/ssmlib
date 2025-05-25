@@ -33,6 +33,7 @@ var (
 	errSessionStopRequested       = errors.New("session stopped gracefully")
 )
 
+const maxOutOfOrderMessages = 50
 const maxInflightMessages = 50
 const resendIntervalDuration = 10 * time.Second
 const resendTimeoutDuration = 1 * time.Minute
@@ -402,7 +403,8 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketConection) error {
 	// TODO: It might be good to keep this state in a struct, separate from the method. That way
 	// if we reconnect to the websocket, we can pickup exactly where we left off.
-	incomingSequenceId := int64(0)
+	outOfOrderMessages := map[int64]*messages.AgentMessage{}
+	expectedSequenceId := int64(0)
 
 	for {
 		if ctx.Err() != nil {
@@ -442,24 +444,51 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 
 		// This is handled by the handler that cares about the data stream.
 		case messages.OutputStreamData:
-			err := s.sendAcknowledgeMessage(ctx, msg)
-			if err != nil {
-				s.Log.Error("Failed to send acknowledgement", "sequence", msg.SequenceNumber, "error", err)
+
+			// Send acknowledgments for anything we've already read or the next message we expect.
+			if expectedSequenceId >= msg.SequenceNumber {
+				err := s.sendAcknowledgeMessage(ctx, msg)
+				if err != nil {
+					s.Log.Error("Failed to send acknowledgement", "sequence", msg.SequenceNumber, "error", err)
+				}
+			} else {
+				if len(outOfOrderMessages) < maxOutOfOrderMessages {
+					outOfOrderMessages[msg.SequenceNumber] = msg
+					s.Log.Debug("Queued out of order message", "ExpectedSequence", expectedSequenceId, "ActualSequence", msg.SequenceNumber)
+				} else {
+					s.Log.Debug("Dropped out of order message", "ExpectedSequence", expectedSequenceId, "ActualSequence", msg.SequenceNumber)
+				}
 			}
 
 			// We have two choices if the receiver is not keepig up with the packets.
 			// We can either drop incoming data messages or we can stop reading new
 			// packets until they catch up. This implementation stops everything.
 			// It might be better to just drop the packets instead. This would
-			if incomingSequenceId == msg.SequenceNumber {
+			if expectedSequenceId == msg.SequenceNumber {
+				s.Log.Debug("Received expected sequence number", "ExpectedSequence", expectedSequenceId)
 				select {
 				case s.incomingDataMessages <- msg:
-					incomingSequenceId += 1
+					expectedSequenceId += 1
 				case <-ctx.Done():
 					return context.Cause(ctx)
 				}
-			} else {
-				s.Log.Debug("Unexpected Sequence Number", "ExpectedSequence", incomingSequenceId, "ActualSequence", msg.SequenceNumber)
+
+				// Attempt to send out of order messages. It might be better just to put all messages into
+				// the map and then we can consolidate this logic to the below logic....
+				for {
+					if msg, ok := outOfOrderMessages[expectedSequenceId]; ok {
+						select {
+						case s.incomingDataMessages <- msg:
+							s.Log.Debug("Dequeued out of order message", "Sequence", expectedSequenceId)
+							delete(outOfOrderMessages, expectedSequenceId)
+							expectedSequenceId += 1
+						case <-ctx.Done():
+							return context.Cause(ctx)
+						}
+					} else {
+						break
+					}
+				}
 			}
 
 		// Remote session is closing the session
