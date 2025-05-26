@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -34,7 +33,8 @@ var (
 )
 
 const maxOutOfOrderMessages = 50
-const maxInflightMessages = 50
+const maxInflightMessages = 10
+const writeMessageDelay = 1 * time.Millisecond
 const resendIntervalDuration = 1 * time.Second
 const resendTimeoutDuration = 1 * time.Minute
 const clientVersion = "1.2.0.0"
@@ -311,14 +311,17 @@ func (s *Session) Write(ctx context.Context, message *messages.AgentMessage) err
 }
 
 func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketConection) error {
+	type unacknowledgedMessage struct {
+		message  *messages.AgentMessage
+		sendTime time.Time
+	}
+
 	// TODO: It might be good to keep this state in a struct, separate from the method. That way
 	// if we reconnect to the websocket, we can pickup exactly where we left off.
 	nextOutgoingSequenceNumber := int64(0)
-	unacknowledgedMessages := map[int64]*messages.AgentMessage{}
-
-	resendSequenceNumber := int64(0)
-	resendTimer := (<-chan time.Time)(nil)
-	resendTimeout := (<-chan time.Time)(nil)
+	unacknowledgedMessages := map[int64]unacknowledgedMessage{}
+	resendTicker := time.NewTicker(100 * time.Millisecond)
+	defer resendTicker.Stop()
 
 	for {
 		// If we can't send any more messages, then we don't want to pull any
@@ -334,21 +337,11 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 		select {
 		case seqNumber := <-s.ackReceived:
 			s.Log.Debug("Received acknowledgment", "sequenceNumber", seqNumber)
-			delete(unacknowledgedMessages, seqNumber)
-
-			if len(unacknowledgedMessages) == 0 {
-				s.Log.Debug("Remote has acknowledged all messages")
-				resendTimer, resendTimeout = nil, nil
-			} else {
-				// Get the lowest unacknowledged message number.
-				// It may not be the next number if the acknowledgments
-				// came out of order.
-				resendSequenceNumber = math.MaxInt64
-				for num := range unacknowledgedMessages {
-					resendSequenceNumber = min(resendSequenceNumber, num)
-				}
-				resendTimer = time.Tick(resendIntervalDuration)
-				resendTimeout = time.After(resendTimeoutDuration)
+			ackmsg, ok := unacknowledgedMessages[seqNumber]
+			ackDuration := time.Since(ackmsg.sendTime)
+			if ok {
+				delete(unacknowledgedMessages, seqNumber)
+				s.Log.Debug("Acknowledgment received", "UnacknowledgedMessages", len(unacknowledgedMessages), "Duration", ackDuration)
 			}
 
 		case controlMessage := <-s.outgoingControlMessages:
@@ -363,7 +356,10 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 		case message := <-outgoingMessages:
 			s.Log.Debug("Sending message to remote", "messageType", message.MessageType, "sequenceNumber", nextOutgoingSequenceNumber)
 			message.SequenceNumber = nextOutgoingSequenceNumber
-			unacknowledgedMessages[nextOutgoingSequenceNumber] = message
+			unacknowledgedMessages[nextOutgoingSequenceNumber] = unacknowledgedMessage{
+				message:  message,
+				sendTime: time.Now(),
+			}
 			if message.SequenceNumber == 0 && message.Flags != messages.Fin {
 				message.Flags = messages.Syn
 			}
@@ -381,21 +377,28 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 			nextOutgoingSequenceNumber += 1
 
 			// Don't send things too fast, otherwise the remote end appears to have a lot of issues keeping up.
-			time.Sleep(2 * time.Millisecond)
+			time.Sleep(writeMessageDelay)
 
-		// TODO: Store a timestamp with each message, and this can run on an interval
-		// inspecting them and then resend relevant ones...
-		case <-resendTimer:
-			s.Log.Debug("Resending message", "sequenceNumber", resendSequenceNumber)
-			message := unacknowledgedMessages[resendSequenceNumber]
-			err := s.writeMessage(message, socket)
-			if err != nil {
-				s.Log.Error("failed to resend message", "messageType", message.MessageType, "error", err)
+		case <-resendTicker.C:
+			currentTime := time.Now()
+			for seq, unack := range unacknowledgedMessages {
+				duration := currentTime.Sub(unack.sendTime)
+
+				if duration > resendTimeoutDuration {
+					// Return if anything exceeded the timeout
+					s.Log.Error("Remote didn't acknowledge message!", "sequenceNumber", seq)
+					return ErrAckTimeout
+
+				} else if duration > resendIntervalDuration {
+					// Resend anything exceeding the interval
+					s.Log.Debug("Resending message", "sequenceNumber", seq)
+					err := s.writeMessage(unack.message, socket)
+					if err != nil {
+						s.Log.Error("failed to resend message", "messageType", unack.message.MessageType, "error", err)
+					}
+					time.Sleep(writeMessageDelay)
+				}
 			}
-
-		case <-resendTimeout:
-			s.Log.Error("Remote didn't acknowledge message!", "sequenceNumber", resendSequenceNumber)
-			return ErrAckTimeout
 
 		case <-ctx.Done():
 			s.Log.Error("Writer stopping due to cancellation", "error", ctx.Err())

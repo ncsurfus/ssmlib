@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/ncsurfus/ssmlib/messages"
 )
@@ -56,8 +55,6 @@ func CopyReaderToSessionWriter(ctx context.Context, reader io.Reader, writer Ses
 		if readerErr != nil {
 			return fmt.Errorf("%w: %w", ErrReadData, readerErr)
 		}
-
-		time.Sleep(2 * time.Millisecond)
 	}
 }
 
