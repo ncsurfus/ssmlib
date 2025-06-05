@@ -17,8 +17,7 @@ var (
 	ErrSendHandshakeResp   = errors.New("failed to send handshake response to session")
 )
 
-// This hasn't changed for years...
-const ClientVersion = "1.2.0.0"
+const ClientVersion = "1.2.331.1"
 
 type HandshakeResult struct {
 	RemoteVersion string
