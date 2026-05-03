@@ -43,6 +43,9 @@ type muxDialRequest struct {
 //
 // The handler verifies that the remote SSM agent supports multiplexing before proceeding.
 // If multiplexing is not supported, Start() will return an error.
+//
+// A MuxPortForward is single-use: once Stop() is called or the handler terminates,
+// it cannot be restarted. Create a new MuxPortForward for each session.
 type MuxPortForward struct {
 	// Log provides structured logging for multiplexing events
 	Log *slog.Logger
@@ -122,6 +125,8 @@ func (m *MuxPortForward) Start(ctx context.Context, session SessionReaderWriter)
 		if err != nil {
 			m.Log.Warn("smux failed to close", "error", err)
 		}
+		dataConn.Close()
+		clientConn.Close()
 		m.signalStop()
 		return nil
 	})
@@ -160,7 +165,7 @@ func (m *MuxPortForward) Start(ctx context.Context, session SessionReaderWriter)
 // Stop() is safe to call multiple times and from multiple goroutines.
 func (m *MuxPortForward) Stop() {
 	m.init()
-	defer m.signalStop()
+	m.signalStop()
 }
 
 // Wait blocks until the handler has completely stopped or the context is cancelled.
@@ -199,6 +204,9 @@ func (m *MuxPortForward) handleDialRequests(ctx context.Context, smuxSession *sm
 				m.Log.Info("smux connection response sent", "error", err)
 			default:
 				m.Log.Info("smux connection response aborted")
+				if smuxConn != nil {
+					smuxConn.Close()
+				}
 			}
 		}
 	}

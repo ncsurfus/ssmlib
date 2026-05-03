@@ -106,8 +106,11 @@ func TestMuxPortForward_Start_Success(t *testing.T) {
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(nil).Once()
 	mockSession.On("Read", mock.Anything).Return(completeMsg, nil).Once()
 
-	// Mock the ongoing read/write operations that will be canceled
-	mockSession.On("Read", mock.Anything).Return(nil, context.Canceled).Maybe()
+	// Mock the ongoing read/write operations that will block until canceled
+	mockSession.On("Read", mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(context.Context)
+		<-ctx.Done()
+	}).Return(nil, context.Canceled).Maybe()
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
 
 	mux := &MuxPortForward{
@@ -289,8 +292,11 @@ func TestMuxPortForward_Integration(t *testing.T) {
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(nil).Once()
 	mockSession.On("Read", mock.Anything).Return(completeMsg, nil).Once()
 
-	// Mock ongoing operations that will be canceled
-	mockSession.On("Read", mock.Anything).Return(nil, context.Canceled).Maybe()
+	// Mock ongoing operations that will block until canceled
+	mockSession.On("Read", mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(context.Context)
+		<-ctx.Done()
+	}).Return(nil, context.Canceled).Maybe()
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
 
 	mux := &MuxPortForward{
