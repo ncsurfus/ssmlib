@@ -2,6 +2,7 @@ package ssmlib
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-// MockWebsocketConnection implements WebsocketConection for testing
+// MockWebsocketConnection implements WebsocketConnection for testing
 type MockWebsocketConnection struct {
 	mock.Mock
 }
@@ -57,9 +58,9 @@ type MockWebsocketDialer struct {
 	mock.Mock
 }
 
-func (m *MockWebsocketDialer) Dial(url string) (WebsocketConection, error) {
+func (m *MockWebsocketDialer) Dial(url string) (WebsocketConnection, error) {
 	args := m.Called(url)
-	if conn, ok := args.Get(0).(WebsocketConection); ok {
+	if conn, ok := args.Get(0).(WebsocketConnection); ok {
 		return conn, args.Error(1)
 	}
 	return nil, args.Error(1)
@@ -288,6 +289,52 @@ func TestSession_HandleIncomingMessages(t *testing.T) {
 	assert.Error(t, err) // Should error due to context cancellation
 }
 
+func TestSession_HandleIncomingMessages_AcksOutOfOrderImmediately(t *testing.T) {
+	// When an out-of-order message arrives, it should be acked immediately
+	// to prevent unnecessary retransmissions from the remote.
+	mockWS := &MockWebsocketConnection{}
+	s := &Session{}
+	s.init()
+
+	// Create messages: send seq 1 first (out of order, expecting 0)
+	msg1 := messages.NewAgentMessage()
+	msg1.MessageType = messages.OutputStreamData
+	msg1.SequenceNumber = 1
+	msg1.Flags = messages.Data
+	msg1.PayloadType = messages.Output
+	msg1.Payload = []byte("second")
+	msg1Bytes, _ := msg1.MarshalBinary()
+
+	callCount := 0
+	mockWS.On("ReadMessage").Run(func(_ mock.Arguments) {
+		callCount++
+	}).Return(websocket.BinaryMessage, msg1Bytes, nil).Once()
+	// Second call blocks until context cancelled
+	mockWS.On("ReadMessage").Return(0, []byte{}, errors.New("closed"))
+
+	// Expect an ack to be written for the out-of-order message
+	ackWritten := make(chan struct{}, 1)
+	mockWS.On("WriteMessage", mock.Anything, mock.Anything).Run(func(_ mock.Arguments) {
+		select {
+		case ackWritten <- struct{}{}:
+		default:
+		}
+	}).Return(nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	go s.handleIncomingMessages(ctx, mockWS)
+
+	// The out-of-order message should trigger an ack via outgoingControlMessages
+	select {
+	case <-s.outgoingControlMessages:
+		// Got the ack — out-of-order message was acked immediately
+	case <-time.After(time.Second):
+		t.Fatal("out-of-order message was not acked immediately")
+	}
+}
+
 func TestSession_HandleIncomingMessages_ReadError(t *testing.T) {
 	mockWS := &MockWebsocketConnection{}
 	s := &Session{}
@@ -324,4 +371,71 @@ func TestSession_Wait_ContextCanceled(t *testing.T) {
 	err := s.Wait(ctx)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestSession_OpenDataChannel_UsesHandshakeClientVersion(t *testing.T) {
+	mockWS := &MockWebsocketConnection{}
+	var sentPayload []byte
+	mockWS.On("WriteMessage", websocket.TextMessage, mock.Anything).Run(func(args mock.Arguments) {
+		sentPayload = args.Get(1).([]byte)
+	}).Return(nil)
+
+	s := &Session{}
+	s.init()
+	err := s.openDataChannel(mockWS, "token")
+	assert.NoError(t, err)
+
+	var msg map[string]string
+	err = json.Unmarshal(sentPayload, &msg)
+	assert.NoError(t, err)
+	assert.Equal(t, handler.ClientVersion, msg["ClientVersion"],
+		"openDataChannel should use the same ClientVersion as the handshake")
+}
+
+func TestSession_WebsocketCloseAfterReadWriteExit(t *testing.T) {
+	// Verify that ws.Close() is called during shutdown, which unblocks
+	// any in-progress ReadMessage calls. gorilla/websocket documents that
+	// Close can be called concurrently with all other methods.
+	mockWS := &MockWebsocketConnection{}
+	mockDialer := &MockWebsocketDialer{}
+	mockHandler := &MockHandler{}
+
+	mockDialer.On("Dial", "ws://test").Return(mockWS, nil)
+	mockWS.On("WriteMessage", mock.Anything, mock.Anything).Return(nil)
+
+	readDone := make(chan struct{})
+	mockWS.On("ReadMessage").Run(func(_ mock.Arguments) {
+		<-readDone
+	}).Return(0, []byte{}, errors.New("closed"))
+
+	closeCalled := make(chan struct{})
+	mockWS.On("Close").Run(func(_ mock.Arguments) {
+		close(closeCalled)
+		close(readDone)
+	}).Return(nil)
+
+	mockHandler.On("Start", mock.Anything, mock.Anything).Return(nil)
+	mockHandler.On("Wait", mock.Anything).Return(nil)
+	mockHandler.On("Stop").Return()
+
+	s := &Session{
+		Dialer:  mockDialer,
+		Handler: mockHandler,
+	}
+
+	err := s.Start(context.Background(), "ws://test", "token")
+	assert.NoError(t, err)
+
+	s.Stop()
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer waitCancel()
+	err = s.Wait(waitCtx)
+	assert.NoError(t, err)
+
+	select {
+	case <-closeCalled:
+	default:
+		t.Error("ws.Close() was never called during shutdown")
+	}
 }

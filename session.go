@@ -37,19 +37,21 @@ const maxInflightMessages = 10
 const writeMessageDelay = 1 * time.Millisecond
 const resendIntervalDuration = 1 * time.Second
 const resendTimeoutDuration = 1 * time.Minute
-const clientVersion = "1.2.0.0"
 
 type WebsocketDialer interface {
-	Dial(url string) (WebsocketConection, error)
+	Dial(url string) (WebsocketConnection, error)
 }
 
-type WebsocketDialerFunc func(url string) (WebsocketConection, error)
+type WebsocketDialerFunc func(url string) (WebsocketConnection, error)
 
-func (wdf WebsocketDialerFunc) Dial(url string) (WebsocketConection, error) {
+func (wdf WebsocketDialerFunc) Dial(url string) (WebsocketConnection, error) {
 	return wdf(url)
 }
 
-type WebsocketConection interface {
+// WebsocketConnection represents a WebSocket connection.
+// Implementations must support concurrent calls to Close with ReadMessage and WriteMessage.
+// The default gorilla/websocket implementation satisfies this requirement.
+type WebsocketConnection interface {
 	ReadMessage() (MessageType int, p []byte, err error)
 	WriteMessage(messageType int, data []byte) error
 	Close() error
@@ -59,6 +61,9 @@ type WebsocketConection interface {
 // It handles the bidirectional communication protocol including message acknowledgments,
 // sequencing, and retransmission. The Session coordinates with a Handler to process
 // the actual data stream (e.g., shell commands, port forwarding).
+//
+// A Session is single-use: once Stop() is called or the session terminates,
+// it cannot be restarted. Create a new Session for each connection.
 type Session struct {
 	// Handler processes the data stream for this session (e.g., Stream, MuxPortForward)
 	Handler Handler
@@ -105,7 +110,7 @@ func (s *Session) init() {
 		}
 
 		if s.Dialer == nil {
-			s.Dialer = WebsocketDialerFunc(func(url string) (WebsocketConection, error) {
+			s.Dialer = WebsocketDialerFunc(func(url string) (WebsocketConnection, error) {
 				ws, _, err := websocket.DefaultDialer.Dial(url, http.Header{})
 				return ws, err
 			})
@@ -208,13 +213,13 @@ func (s *Session) Start(ctx context.Context, streamURL string, tokenValue string
 	return nil
 }
 
-func (s *Session) openDataChannel(socket WebsocketConection, tokenValue string) error {
+func (s *Session) openDataChannel(socket WebsocketConnection, tokenValue string) error {
 	openDataChannelMessage := map[string]string{
 		"MessageSchemaVersion": "1.0",
 		"RequestId":            uuid.NewString(),
 		"TokenValue":           tokenValue,
 		"ClientId":             uuid.NewString(),
-		"ClientVersion":        clientVersion,
+		"ClientVersion":        handler.ClientVersion,
 	}
 	payload, err := json.Marshal(openDataChannelMessage)
 	if err != nil {
@@ -242,7 +247,7 @@ func (s *Session) Stop() {
 
 	// Attempt to gracefully close, but don't become hung in the process.
 	select {
-	case s.outgoingMessages <- messages.NewTerminateSessionMessage():
+	case s.outgoingControlMessages <- messages.NewTerminateSessionMessage():
 		return
 	default:
 		return
@@ -310,10 +315,11 @@ func (s *Session) Write(ctx context.Context, message *messages.AgentMessage) err
 	}
 }
 
-func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketConection) error {
+func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketConnection) error {
 	type unacknowledgedMessage struct {
-		message  *messages.AgentMessage
-		sendTime time.Time
+		message       *messages.AgentMessage
+		firstSendTime time.Time
+		lastSendTime  time.Time
 	}
 
 	// TODO: It might be good to keep this state in a struct, separate from the method. That way
@@ -323,22 +329,36 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 	resendTicker := time.NewTicker(100 * time.Millisecond)
 	defer resendTicker.Stop()
 
+	// writeThrottle prevents sending messages too fast. After sending a message,
+	// we reset this timer and nil out the outgoing channel until it fires.
+	// This avoids blocking the select loop (which would delay ack processing).
+	writeThrottle := time.NewTimer(0)
+	defer writeThrottle.Stop()
+	<-writeThrottle.C // drain initial fire
+	writeThrottled := false
+
 	for {
 		// If we can't send any more messages, then we don't want to pull any
 		// messages from the outgoing message channel. We can accomplish this
 		// by simply setting the channel to nil.
 		var outgoingMessages chan *messages.AgentMessage
-		if len(unacknowledgedMessages) < maxInflightMessages {
+		if len(unacknowledgedMessages) < maxInflightMessages && !writeThrottled {
 			outgoingMessages = s.outgoingMessages
-		} else {
+		} else if len(unacknowledgedMessages) >= maxInflightMessages {
 			s.Log.Debug("Waiting on remote to acknowledge messages before sending more")
+		}
+
+		// Only listen for throttle timer when we're actually throttled
+		var writeThrottleC <-chan time.Time
+		if writeThrottled {
+			writeThrottleC = writeThrottle.C
 		}
 
 		select {
 		case seqNumber := <-s.ackReceived:
 			s.Log.Debug("Received acknowledgment", "sequenceNumber", seqNumber)
 			ackmsg, ok := unacknowledgedMessages[seqNumber]
-			ackDuration := time.Since(ackmsg.sendTime)
+			ackDuration := time.Since(ackmsg.firstSendTime)
 			if ok {
 				delete(unacknowledgedMessages, seqNumber)
 				s.Log.Debug("Acknowledgment received", "UnacknowledgedMessages", len(unacknowledgedMessages), "Duration", ackDuration)
@@ -357,8 +377,9 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 			s.Log.Debug("Sending message to remote", "messageType", message.MessageType, "sequenceNumber", nextOutgoingSequenceNumber)
 			message.SequenceNumber = nextOutgoingSequenceNumber
 			unacknowledgedMessages[nextOutgoingSequenceNumber] = unacknowledgedMessage{
-				message:  message,
-				sendTime: time.Now(),
+				message:       message,
+				firstSendTime: time.Now(),
+				lastSendTime:  time.Now(),
 			}
 			if message.SequenceNumber == 0 && message.Flags != messages.Fin {
 				message.Flags = messages.Syn
@@ -376,27 +397,33 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 			}
 			nextOutgoingSequenceNumber += 1
 
-			// Don't send things too fast, otherwise the remote end appears to have a lot of issues keeping up.
-			time.Sleep(writeMessageDelay)
+			// Throttle: don't send things too fast, otherwise the remote end has issues keeping up.
+			writeThrottled = true
+			writeThrottle.Reset(writeMessageDelay)
+
+		case <-writeThrottleC:
+			writeThrottled = false
 
 		case <-resendTicker.C:
 			currentTime := time.Now()
 			for seq, unack := range unacknowledgedMessages {
-				duration := currentTime.Sub(unack.sendTime)
+				timeSinceFirstSend := currentTime.Sub(unack.firstSendTime)
+				timeSinceLastSend := currentTime.Sub(unack.lastSendTime)
 
-				if duration > resendTimeoutDuration {
+				if timeSinceFirstSend > resendTimeoutDuration {
 					// Return if anything exceeded the timeout
 					s.Log.Error("Remote didn't acknowledge message!", "sequenceNumber", seq)
 					return ErrAckTimeout
 
-				} else if duration > resendIntervalDuration {
+				} else if timeSinceLastSend > resendIntervalDuration {
 					// Resend anything exceeding the interval
 					s.Log.Debug("Resending message", "sequenceNumber", seq)
 					err := s.writeMessage(unack.message, socket)
 					if err != nil {
 						s.Log.Error("failed to resend message", "messageType", unack.message.MessageType, "error", err)
 					}
-					time.Sleep(writeMessageDelay)
+					unack.lastSendTime = currentTime
+					unacknowledgedMessages[seq] = unack
 				}
 			}
 
@@ -407,7 +434,7 @@ func (s *Session) handleOutgoingMessages(ctx context.Context, socket WebsocketCo
 	}
 }
 
-func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketConection) error {
+func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketConnection) error {
 	// TODO: It might be good to keep this state in a struct, separate from the method. That way
 	// if we reconnect to the websocket, we can pickup exactly where we left off.
 	outOfOrderMessages := map[int64]*messages.AgentMessage{}
@@ -462,6 +489,11 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 				if len(outOfOrderMessages) < maxOutOfOrderMessages {
 					outOfOrderMessages[msg.SequenceNumber] = msg
 					s.Log.Debug("Queued out of order message", "ExpectedSequence", expectedSequenceId, "ActualSequence", msg.SequenceNumber)
+					// Ack immediately to prevent unnecessary retransmissions from the remote.
+					err := s.sendAcknowledgeMessage(ctx, msg)
+					if err != nil {
+						s.Log.Error("Failed to send acknowledgement for out-of-order message", "sequence", msg.SequenceNumber, "error", err)
+					}
 				} else {
 					s.Log.Debug("Dropped out of order message", "ExpectedSequence", expectedSequenceId, "ActualSequence", msg.SequenceNumber)
 				}
@@ -484,6 +516,10 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 				// the map and then we can consolidate this logic to the below logic....
 				for {
 					if msg, ok := outOfOrderMessages[expectedSequenceId]; ok {
+						err := s.sendAcknowledgeMessage(ctx, msg)
+						if err != nil {
+							s.Log.Error("Failed to send acknowledgement for out-of-order message", "sequence", msg.SequenceNumber, "error", err)
+						}
 						select {
 						case s.incomingDataMessages <- msg:
 							s.Log.Debug("Dequeued out of order message", "Sequence", expectedSequenceId)
@@ -509,7 +545,7 @@ func (s *Session) handleIncomingMessages(ctx context.Context, socket WebsocketCo
 }
 
 // writeMessage should never be called directly, except for handleOutgoingMessages
-func (s *Session) writeMessage(msg *messages.AgentMessage, socket WebsocketConection) error {
+func (s *Session) writeMessage(msg *messages.AgentMessage, socket WebsocketConnection) error {
 	data, err := msg.MarshalBinary()
 	if err != nil {
 		return fmt.Errorf("failed to marshal outgoing message: %w", err)
@@ -523,7 +559,7 @@ func (s *Session) writeMessage(msg *messages.AgentMessage, socket WebsocketConec
 	return nil
 }
 
-func (s *Session) readMessage(socket WebsocketConection) ([]byte, error) {
+func (s *Session) readMessage(socket WebsocketConnection) ([]byte, error) {
 	_, msg, err := socket.ReadMessage()
 	if err != nil {
 		if websocket.IsCloseError(err, 1000, 1001, 1006) {
