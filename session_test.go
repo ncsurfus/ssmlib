@@ -326,7 +326,7 @@ func TestSession_HandleIncomingMessages_AcksOutOfOrderImmediately(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	go s.handleIncomingMessages(ctx, mockWS)
+	go func() { _ = s.handleIncomingMessages(ctx, mockWS) }()
 
 	// The out-of-order message should trigger an ack via outgoingControlMessages
 	select {
