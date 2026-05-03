@@ -332,10 +332,39 @@ func TestAgentMessage_ValidateMessage_PayloadLengthMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "payload length mismatch")
 }
 
-// Note: PayloadDigestMismatch test is not included because ValidateMessage()
-// internally calls sha256PayloadDigest() which recalculates and overwrites
-// the digest, making it impossible to test digest mismatch scenarios without
-// inspecting internal implementation details.
+func TestAgentMessage_ValidateMessage_PayloadDigestMismatch(t *testing.T) {
+	msg := NewAgentMessage()
+	msg.MessageType = InputStreamData
+	msg.Payload = []byte("test")
+	msg.PayloadLength = uint32(len(msg.Payload))
+	msg.sha256PayloadDigest()
+
+	// Corrupt the digest
+	msg.PayloadDigest[0] ^= 0xff
+
+	err := msg.ValidateMessage()
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidAgentMessage)
+	assert.Contains(t, err.Error(), "payload digest mismatch")
+}
+
+func TestFormatUUIDBytes_DoesNotCorruptAdjacentMemory(t *testing.T) {
+	// Simulate the layout in a marshaled message: UUID at [64:80], digest at [80:112]
+	buf := make([]byte, 120)
+	// Fill digest area with known pattern
+	for i := 80; i < 112; i++ {
+		buf[i] = 0xAA
+	}
+	// Put some UUID bytes in
+	copy(buf[64:80], []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+
+	formatUUIDBytes(buf[64:80])
+
+	// Verify digest area was NOT corrupted
+	for i := 80; i < 112; i++ {
+		assert.Equal(t, byte(0xAA), buf[i], "byte at offset %d was corrupted", i)
+	}
+}
 
 func TestAgentMessage_MarshalBinary_Success(t *testing.T) {
 	msg := NewAgentMessage()
@@ -401,7 +430,7 @@ func TestAgentMessage_UnmarshalBinary_InvalidData(t *testing.T) {
 	err := msg.UnmarshalBinary([]byte("invalid data"))
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidAgentMessage)
-	assert.Contains(t, err.Error(), "data too short")
+	assert.Contains(t, err.Error(), "invalid header length")
 }
 
 func TestAgentMessage_UnmarshalBinary_TooShort(t *testing.T) {
@@ -409,7 +438,7 @@ func TestAgentMessage_UnmarshalBinary_TooShort(t *testing.T) {
 	err := msg.UnmarshalBinary([]byte{1, 2, 3, 4}) // Too short
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidAgentMessage)
-	assert.Contains(t, err.Error(), "data too short")
+	assert.Contains(t, err.Error(), "invalid header length")
 }
 
 func TestAgentMessage_String(t *testing.T) {

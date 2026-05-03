@@ -182,7 +182,7 @@ func (m *AgentMessage) ValidateMessage() error {
 		return fmt.Errorf("%w: payload length mismatch (want %d, got %d)", ErrInvalidAgentMessage, m.PayloadLength, len(m.Payload))
 	}
 
-	if !bytes.Equal(m.sha256PayloadDigest(), m.PayloadDigest) {
+	if !bytes.Equal(m.computePayloadDigest(), m.PayloadDigest) {
 		return fmt.Errorf("%w: payload digest mismatch", ErrInvalidAgentMessage)
 	}
 
@@ -198,6 +198,12 @@ func (m *AgentMessage) UnmarshalBinary(data []byte) error {
 	}
 
 	m.headerLength = binary.BigEndian.Uint32(data)
+
+	// Validate header length early to prevent integer overflow in subsequent arithmetic.
+	// close_channel message header is 112 bytes, standard is 116 bytes.
+	if m.headerLength > agentMsgHeaderLen || m.headerLength < agentMsgHeaderLen-4 {
+		return fmt.Errorf("%w: invalid header length %d", ErrInvalidAgentMessage, m.headerLength)
+	}
 
 	// Check if we have enough data for the basic header
 	minHeaderSize := 80 + sha256.Size // up to PayloadDigest
@@ -260,7 +266,7 @@ func (m *AgentMessage) MarshalBinary() ([]byte, error) {
 	if err := binary.Write(buf, binary.BigEndian, m.SchemaVersion); err != nil {
 		return nil, err
 	}
-	if err := binary.Write(buf, binary.BigEndian, time.Duration(m.CreatedDate.UnixNano()).Milliseconds()); err != nil {
+	if err := binary.Write(buf, binary.BigEndian, m.CreatedDate.UnixMilli()); err != nil {
 		return nil, err
 	}
 	if err := binary.Write(buf, binary.BigEndian, m.SequenceNumber); err != nil {
@@ -316,10 +322,14 @@ func (m *AgentMessage) convertMessageType() []byte {
 	return msgType[:msgTypeLen]
 }
 
-func (m *AgentMessage) sha256PayloadDigest() []byte {
+func (m *AgentMessage) computePayloadDigest() []byte {
 	digest := sha256.New()
 	_, _ = digest.Write(m.Payload)
-	m.PayloadDigest = digest.Sum(nil)
+	return digest.Sum(nil)
+}
+
+func (m *AgentMessage) sha256PayloadDigest() []byte {
+	m.PayloadDigest = m.computePayloadDigest()
 	return m.PayloadDigest
 }
 
@@ -335,5 +345,8 @@ func parseTime(data []byte) time.Time {
 }
 
 func formatUUIDBytes(data []byte) []byte {
-	return append(data[8:], data[:8]...)
+	out := make([]byte, len(data))
+	copy(out, data[8:])
+	copy(out[8:], data[:8])
+	return out
 }
