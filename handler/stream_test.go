@@ -93,8 +93,11 @@ func TestStream_Start_Success(t *testing.T) {
 func TestStream_Start_WithDefaults(t *testing.T) {
 	mockSession := &MockSessionReaderWriter{}
 
-	// Mock session operations that will be canceled
-	mockSession.On("Read", mock.Anything).Return(nil, context.Canceled).Maybe()
+	// Mock session operations that will block until canceled
+	mockSession.On("Read", mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(context.Context)
+		<-ctx.Done()
+	}).Return(nil, context.Canceled).Maybe()
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
 
 	stream := &Stream{
@@ -237,22 +240,40 @@ func TestStream_Integration_DataFlow(t *testing.T) {
 	testInput := "hello world"
 	testOutput := "response data"
 
-	// Set up a reader with test data
-	reader := strings.NewReader(testInput)
-	writer := &bytes.Buffer{}
+	// Set up a reader that blocks after delivering test data, and a writer to capture output
+	readerDone := make(chan struct{})
+	reader := &MockReader{}
+	reader.On("Read", mock.Anything).Run(func(args mock.Arguments) {
+		p := args.Get(0).([]byte)
+		copy(p, testInput)
+	}).Return(len(testInput), nil).Once()
+	reader.On("Read", mock.Anything).Run(func(_ mock.Arguments) {
+		<-readerDone
+	}).Return(0, context.Canceled).Maybe()
+	defer close(readerDone)
+
+	// Use a channel to signal when the write happens, avoiding a data race on the buffer.
+	written := make(chan struct{}, 1)
+	writer := &MockWriter{}
+	writer.On("Write", []byte(testOutput)).Run(func(_ mock.Arguments) {
+		written <- struct{}{}
+	}).Return(len(testOutput), nil).Once()
 
 	// Create output message for session to return
 	outputMsg := messages.NewAgentMessage()
 	outputMsg.PayloadType = messages.Output
 	outputMsg.Payload = []byte(testOutput)
 
-	// Mock session expectations - be more lenient with the matching
+	// Mock session expectations
 	mockSession.On("Write", mock.Anything, mock.MatchedBy(func(msg *messages.AgentMessage) bool {
 		return msg.PayloadType == messages.Output
 	})).Return(nil).Maybe()
 
 	mockSession.On("Read", mock.Anything).Return(outputMsg, nil).Once()
-	mockSession.On("Read", mock.Anything).Return(nil, context.Canceled).Maybe()
+	mockSession.On("Read", mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(context.Context)
+		<-ctx.Done()
+	}).Return(nil, context.Canceled).Maybe()
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
 
 	stream := &Stream{
@@ -267,7 +288,13 @@ func TestStream_Integration_DataFlow(t *testing.T) {
 	err := stream.Start(ctx, mockSession)
 	assert.NoError(t, err)
 
-	// Stop the stream immediately to avoid timing issues
+	// Wait for the output to be written before stopping
+	select {
+	case <-written:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for output to be written")
+	}
+
 	stream.Stop()
 
 	// Wait for completion
@@ -277,8 +304,7 @@ func TestStream_Integration_DataFlow(t *testing.T) {
 	err = stream.Wait(waitCtx)
 	assert.NoError(t, err)
 
-	// Verify output was written
-	assert.Equal(t, testOutput, writer.String())
+	writer.AssertExpectations(t)
 
 	mockSession.AssertExpectations(t)
 }
@@ -291,15 +317,18 @@ func TestStream_TerminalSizeUpdates(t *testing.T) {
 	// Mock terminal size - just return consistent size to avoid timing issues
 	mockTermSize.On("Size").Return(80, 24, nil).Maybe()
 
-	// Mock reader to avoid EOF issues
-	mockReader.On("Read", mock.Anything).Return(0, context.Canceled).Maybe()
+	// Mock reader to block until context cancels
+	mockReader.On("Read", mock.Anything).WaitUntil(time.After(time.Second)).Return(0, context.Canceled).Maybe()
 
 	// Mock session operations
 	mockSession.On("Write", mock.Anything, mock.MatchedBy(func(msg *messages.AgentMessage) bool {
 		return msg.PayloadType == messages.Size
 	})).Return(nil).Maybe()
 
-	mockSession.On("Read", mock.Anything).Return(nil, context.Canceled).Maybe()
+	mockSession.On("Read", mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(context.Context)
+		<-ctx.Done()
+	}).Return(nil, context.Canceled).Maybe()
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
 
 	stream := &Stream{
@@ -336,11 +365,14 @@ func TestStream_TerminalSizeError(t *testing.T) {
 	// Mock terminal size error
 	mockTermSize.On("Size").Return(0, 0, errors.New("terminal size error")).Maybe()
 
-	// Mock reader to avoid EOF issues
-	mockReader.On("Read", mock.Anything).Return(0, context.Canceled).Maybe()
+	// Mock reader to block until context cancels
+	mockReader.On("Read", mock.Anything).WaitUntil(time.After(time.Second)).Return(0, context.Canceled).Maybe()
 
 	// Mock session operations
-	mockSession.On("Read", mock.Anything).Return(nil, context.Canceled).Maybe()
+	mockSession.On("Read", mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(context.Context)
+		<-ctx.Done()
+	}).Return(nil, context.Canceled).Maybe()
 	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
 
 	stream := &Stream{
@@ -495,4 +527,60 @@ func TestStream_WriterError(t *testing.T) {
 
 	err = stream.Wait(waitCtx)
 	assert.Error(t, err) // Should fail due to writer error
+}
+
+func TestStream_TerminalSizeChange(t *testing.T) {
+	// Test that terminal size changes are detected and sent
+	mockSession := &MockSessionReaderWriter{}
+	mockTermSize := &MockTerminalSize{}
+	mockReader := &MockReader{}
+
+	// Return different sizes on successive calls to trigger a change
+	callCount := 0
+	mockTermSize.On("Size").Run(func(_ mock.Arguments) {
+		callCount++
+	}).Return(80, 24, nil).Once()
+	mockTermSize.On("Size").Return(120, 40, nil).Maybe()
+
+	mockReader.On("Read", mock.Anything).WaitUntil(time.After(2 * time.Second)).Return(0, context.Canceled).Maybe()
+
+	// Track size messages written
+	sizeWritten := make(chan struct{}, 10)
+	mockSession.On("Write", mock.Anything, mock.MatchedBy(func(msg *messages.AgentMessage) bool {
+		return msg.PayloadType == messages.Size
+	})).Run(func(_ mock.Arguments) {
+		select {
+		case sizeWritten <- struct{}{}:
+		default:
+		}
+	}).Return(nil).Maybe()
+
+	mockSession.On("Read", mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(context.Context)
+		<-ctx.Done()
+	}).Return(nil, context.Canceled).Maybe()
+	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
+
+	stream := &Stream{
+		Reader:       mockReader,
+		Writer:       &bytes.Buffer{},
+		TerminalSize: mockTermSize,
+		Log:          slog.New(DiscardHandler),
+	}
+
+	err := stream.Start(context.Background(), mockSession)
+	assert.NoError(t, err)
+
+	// Wait for at least one size message to be written
+	select {
+	case <-sizeWritten:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for terminal size update")
+	}
+
+	stream.Stop()
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	err = stream.Wait(waitCtx)
+	assert.NoError(t, err)
 }

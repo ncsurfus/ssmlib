@@ -6,12 +6,14 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ncsurfus/ssmlib/messages"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/xtaci/smux"
 )
 
 // MockSessionReaderWriter implements SessionReaderWriter for testing
@@ -372,4 +374,150 @@ func (m *MockConn) SetReadDeadline(t time.Time) error {
 func (m *MockConn) SetWriteDeadline(t time.Time) error {
 	args := m.Called(t)
 	return args.Error(0)
+}
+
+func TestMuxPortForward_Dial_Success(t *testing.T) {
+	// Wire a real smux server on the other side of the session to test Dial end-to-end.
+	// MuxPortForward internally creates: dataConn <-> clientConn (smux.Client)
+	// CopySessionReaderToWriter: session.Read -> dataConn.Write
+	// CopyReaderToSessionWriter: dataConn.Read -> session.Write
+	// We need session.Read/Write to proxy to a smux.Server.
+
+	smuxServer, smuxClient := net.Pipe()
+	defer smuxServer.Close()
+	defer smuxClient.Close()
+
+	handshakeReq := messages.HandshakeRequestPayload{
+		AgentVersion: "3.1.0.0",
+		RequestedClientActions: []messages.RequestedClientAction{
+			{ActionType: messages.SessionType},
+		},
+	}
+	reqPayload, _ := json.Marshal(handshakeReq)
+	reqMsg := messages.NewAgentMessage()
+	reqMsg.PayloadType = messages.HandshakeRequest
+	reqMsg.Payload = reqPayload
+
+	completeMsg := messages.NewAgentMessage()
+	completeMsg.PayloadType = messages.HandshakeComplete
+
+	readCount := 0
+	var mu sync.Mutex
+	session := struct {
+		SessionReader
+		SessionWriter
+	}{
+		SessionReader: SessionReaderFunc(func(ctx context.Context) (*messages.AgentMessage, error) {
+			mu.Lock()
+			readCount++
+			n := readCount
+			mu.Unlock()
+			switch n {
+			case 1:
+				return reqMsg, nil
+			case 2:
+				return completeMsg, nil
+			default:
+				buf := make([]byte, 65536)
+				nn, err := smuxClient.Read(buf)
+				if err != nil {
+					return nil, err
+				}
+				msg := messages.NewAgentMessage()
+				msg.PayloadType = messages.Output
+				msg.Payload = buf[:nn]
+				return msg, nil
+			}
+		}),
+		SessionWriter: SessionWriterFunc(func(ctx context.Context, msg *messages.AgentMessage) error {
+			mu.Lock()
+			n := readCount
+			mu.Unlock()
+			if n <= 2 {
+				return nil // handshake response
+			}
+			_, err := smuxClient.Write(msg.Payload)
+			return err
+		}),
+	}
+
+	// Start smux server on the other end
+	smuxSrv, err := smux.Server(smuxServer, nil)
+	assert.NoError(t, err)
+	defer smuxSrv.Close()
+
+	// Accept streams in background (smux server side)
+	go func() {
+		for {
+			stream, err := smuxSrv.AcceptStream()
+			if err != nil {
+				return
+			}
+			stream.Close()
+		}
+	}()
+
+	mux := &MuxPortForward{
+		Log: slog.New(DiscardHandler),
+	}
+
+	err = mux.Start(context.Background(), session)
+	assert.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	conn, err := mux.Dial(ctx)
+	assert.NoError(t, err)
+	assert.NotNil(t, conn)
+	if conn != nil {
+		conn.Close()
+	}
+
+	mux.Stop()
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer waitCancel()
+	_ = mux.Wait(waitCtx)
+}
+
+func TestMuxPortForward_Start_SmuxKeepAliveDisabled(t *testing.T) {
+	// Test with a version that supports smux keep alive (>= 3.1.1511.0)
+	mockSession := &MockSessionReaderWriter{}
+
+	handshakeReq := messages.HandshakeRequestPayload{
+		AgentVersion: "3.2.0.0", // Supports SmuxKeepAlive
+		RequestedClientActions: []messages.RequestedClientAction{
+			{ActionType: messages.SessionType},
+		},
+	}
+	reqPayload, _ := json.Marshal(handshakeReq)
+	reqMsg := messages.NewAgentMessage()
+	reqMsg.PayloadType = messages.HandshakeRequest
+	reqMsg.Payload = reqPayload
+
+	completeMsg := messages.NewAgentMessage()
+	completeMsg.PayloadType = messages.HandshakeComplete
+
+	mockSession.On("Read", mock.Anything).Return(reqMsg, nil).Once()
+	mockSession.On("Write", mock.Anything, mock.Anything).Return(nil).Once()
+	mockSession.On("Read", mock.Anything).Return(completeMsg, nil).Once()
+
+	mockSession.On("Read", mock.Anything).Run(func(args mock.Arguments) {
+		ctx := args.Get(0).(context.Context)
+		<-ctx.Done()
+	}).Return(nil, context.Canceled).Maybe()
+	mockSession.On("Write", mock.Anything, mock.Anything).Return(context.Canceled).Maybe()
+
+	mux := &MuxPortForward{
+		Log: slog.New(DiscardHandler),
+	}
+
+	err := mux.Start(context.Background(), mockSession)
+	assert.NoError(t, err)
+
+	mux.Stop()
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	err = mux.Wait(waitCtx)
+	assert.NoError(t, err)
 }

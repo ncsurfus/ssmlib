@@ -6,7 +6,7 @@ import (
 )
 
 // FeatureFlag determines if a feature flag is enabled by checking if the
-// version is **greater** than set version.
+// version is **greater than or equal to** the set version.
 type FeatureFlag string
 
 func (v FeatureFlag) SupportsVersion(agentVersion string) bool {
@@ -44,5 +44,5 @@ func (v FeatureFlag) SupportsVersion(agentVersion string) bool {
 	}
 
 	// Equal Version
-	return false
+	return true
 }

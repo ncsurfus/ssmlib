@@ -24,6 +24,9 @@ const TerminalWindowIntervalMilliseconds = 250
 //
 // The Stream handler automatically detects terminal capabilities and periodically
 // sends terminal size updates to ensure proper formatting of interactive applications.
+//
+// A Stream is single-use: once Stop() is called or the handler terminates,
+// it cannot be restarted. Create a new Stream for each session.
 type Stream struct {
 	// Reader provides input data to send to the remote session (default os.Stdin)
 	Reader io.Reader
@@ -133,11 +136,13 @@ func (s *Stream) Start(ctx context.Context, session SessionReaderWriter) error {
 		// This failing should not force the errgrp to exit!
 		terminalSize := s.getTerminalSize()
 		lastWidth, lastHeight := 0, 0
+		ticker := time.NewTicker(TerminalWindowIntervalMilliseconds * time.Millisecond)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-s.errctx.Done():
 				return nil
-			case <-time.After(TerminalWindowIntervalMilliseconds * time.Millisecond):
+			case <-ticker.C:
 				width, height, err := terminalSize.Size()
 				if err != nil {
 					s.Log.Warn("failed to get terminal size!", "error", err)
