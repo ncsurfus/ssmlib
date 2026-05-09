@@ -612,6 +612,52 @@ func TestAgentMessage_ValidateMessage_HeaderLengthTooLarge(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidAgentMessage)
 }
 
+func TestAgentMessage_ValidateMessage_SkipsStartPublication(t *testing.T) {
+	msg := &AgentMessage{
+		headerLength: 0,
+		MessageType:  StartPublication,
+		SchemaVersion: 0,
+	}
+
+	err := msg.ValidateMessage()
+	assert.NoError(t, err)
+}
+
+func TestAgentMessage_ValidateMessage_SkipsPausePublication(t *testing.T) {
+	msg := &AgentMessage{
+		headerLength: 0,
+		MessageType:  PausePublication,
+		SchemaVersion: 0,
+	}
+
+	err := msg.ValidateMessage()
+	assert.NoError(t, err)
+}
+
+func TestAgentMessage_ValidateMessage_SkipsDigestCheckWhenPayloadEmpty(t *testing.T) {
+	msg := NewAgentMessage()
+	msg.MessageType = InputStreamData
+	msg.Payload = []byte{}
+	msg.PayloadLength = 0
+	msg.PayloadDigest = []byte{0xde, 0xad, 0xbe, 0xef} // wrong digest, should not matter
+
+	err := msg.ValidateMessage()
+	assert.NoError(t, err)
+}
+
+func TestAgentMessage_ValidateMessage_ChecksDigestWhenPayloadPresent(t *testing.T) {
+	msg := NewAgentMessage()
+	msg.MessageType = InputStreamData
+	msg.Payload = []byte("test")
+	msg.PayloadLength = uint32(len(msg.Payload))
+	msg.PayloadDigest = []byte{0xde, 0xad, 0xbe, 0xef} // wrong digest
+
+	err := msg.ValidateMessage()
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidAgentMessage)
+	assert.Contains(t, err.Error(), "payload digest mismatch")
+}
+
 func TestAgentMessage_MarshalBinary_NilPayload(t *testing.T) {
 	msg := NewAgentMessage()
 	msg.MessageType = InputStreamData

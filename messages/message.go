@@ -156,6 +156,11 @@ func ParseAcknowledgment(msg *AgentMessage) (int64, error) {
 
 // ValidateMessage performs checks on the values of the AgentMessage to ensure they are sane.
 func (m *AgentMessage) ValidateMessage() error {
+	// The Session Manager plugin doesn't validate these message types.
+	if m.MessageType == StartPublication || m.MessageType == PausePublication {
+		return nil
+	}
+
 	// close_channel message header is 112 bytes
 	if m.headerLength > agentMsgHeaderLen || m.headerLength < agentMsgHeaderLen-4 {
 		return fmt.Errorf("%w: invalid header length", ErrInvalidAgentMessage)
@@ -182,7 +187,8 @@ func (m *AgentMessage) ValidateMessage() error {
 		return fmt.Errorf("%w: payload length mismatch (want %d, got %d)", ErrInvalidAgentMessage, m.PayloadLength, len(m.Payload))
 	}
 
-	if !bytes.Equal(m.computePayloadDigest(), m.PayloadDigest) {
+	// The Session Manager plugin only validates if the Payload length is greater than zoer.
+	if m.PayloadLength > 0 && !bytes.Equal(m.computePayloadDigest(), m.PayloadDigest) {
 		return fmt.Errorf("%w: payload digest mismatch", ErrInvalidAgentMessage)
 	}
 
